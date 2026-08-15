@@ -250,7 +250,25 @@ stdenv0.override (
                   unset NIXGG_BYPASS
                 '' + (probeArgs.preBuild or "");
 
-                postBuild = (probeArgs.postBuild or "") + submitBuildTreeScript outerName;
+                # The submit is its own phase appended via postPhases,
+                # NOT a postBuild hook — for the same reason phase 2's
+                # tree-restore is ggRestorePhase rather than a preCheck
+                # hook, and the failure mode is just as quiet.
+                #
+                # postBuild only runs if the package's buildPhase calls
+                # `runHook postBuild`. Plenty of hand-written
+                # buildPhases don't; nixpkgs' own linux-config is one.
+                # Those packages built fine, submitted nothing, and
+                # failed with Nix's opaque "failed to submit output
+                # path for 'out'" — with no hint that a hook had been
+                # skipped.
+                #
+                # setup.sh splices ${postPhases[*]} onto the end of the
+                # phase list unconditionally, gated by no dont*/do*
+                # toggle. Since phase 1 disables everything after
+                # buildPhase, this lands immediately after it.
+                postPhases = (lib.toList (probeArgs.postPhases or [ ])) ++ [ "ggSubmitPhase" ];
+                ggSubmitPhase = submitBuildTreeScript outerName;
               }
               // nonexistentOut;
           in
