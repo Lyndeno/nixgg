@@ -273,3 +273,33 @@ func TestCommonAncestor(t *testing.T) {
 		})
 	}
 }
+
+// The kbuild case. `-Wp,-MMD,<file>` redirects dependency output to a
+// file, so a scanner running `gcc -M -MG -MF -` alongside it gets an
+// EMPTY stdout and concludes the TU has no headers. The symptom is a
+// staging tree containing only the .c, and a missing-header error from
+// inside the inner derivation — a long way from the cause.
+func TestStripWpDep(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+		keep bool
+	}{
+		{"kbuild depfile", "-Wp,-MMD,./.helper.o.d", "", false},
+		{"MD form", "-Wp,-MD,dep.d", "", false},
+		{"MF form", "-Wp,-MF,dep.d", "", false},
+		{"valueless forms", "-Wp,-MM,-MG", "", false},
+		{"non-dep -Wp survives", "-Wp,-DFOO=1", "-Wp,-DFOO=1", true},
+		{"mixed keeps the remainder", "-Wp,-MMD,dep.d,-DBAR", "-Wp,-DBAR", true},
+		{"non--Wp flag untouched", "-O2", "-O2", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := StripWpDep(tc.in)
+			if ok != tc.keep || (ok && got != tc.want) {
+				t.Errorf("StripWpDep(%q) = (%q, %v), want (%q, %v)",
+					tc.in, got, ok, tc.want, tc.keep)
+			}
+		})
+	}
+}

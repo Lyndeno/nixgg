@@ -326,6 +326,16 @@ func parseCompileArgs(args []string) (source, output string, flags []string, ok 
 				return "", "", nil, false
 			}
 			i++
+		// Same flags, spelled as preprocessor passthrough. kbuild emits
+		// `-Wp,-MMD,./.<obj>.o.d` on every compile; the path is relative
+		// to make's cwd exactly like the bare forms above, and the
+		// derivation's cwd is a read-only store path. scan.StripWpDep is
+		// shared with the scanner so both agree on what counts as
+		// dependency plumbing.
+		case strings.HasPrefix(a, "-Wp,"):
+			if kept, ok := scan.StripWpDep(a); ok {
+				flags = append(flags, kept)
+			}
 		case a == "-x" || a == "-Xlinker" || a == "-Xassembler":
 			// Two-arg forms with values that aren't sources; keep both.
 			if i+1 >= len(args) {
