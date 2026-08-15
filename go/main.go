@@ -53,6 +53,8 @@ func run() error {
 		return shim.Objtool(args, cfg, l)
 	case dispatch.ToolLD:
 		return shim.LD(args, cfg, l)
+	case dispatch.ToolObjcopy:
+		return shim.Objcopy(args, cfg, l)
 	case dispatch.ToolRanlib:
 		// ranlib on our thunk/store outputs would need to open+modify a
 		// file we don't own. Real ranlib on a real .a would be

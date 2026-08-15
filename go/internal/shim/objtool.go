@@ -90,6 +90,7 @@ func Objtool(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		Bash:        cfg.BashRoot,
 		Coreutils:   cfg.CoreutilsRoot,
 		ToolBin:     toolStore,
+		InPlace:     true,
 		Flags:       flags,
 		Input:       in,
 		StoreDeps:   storedeps.From(nil, "", cfg.KnownStorePaths),

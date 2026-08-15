@@ -224,7 +224,7 @@
               # rewriter, reached only when a caller points kbuild's
               # `objtool=` make variable here (nothing resolves it via
               # PATH). Linked anyway so that pointing at it works.
-              for t in ar c++ cc g++ gcc ranlib clang clang++ objtool ld; do
+              for t in ar c++ cc g++ gcc ranlib clang clang++ objtool ld objcopy; do
                 ln -s ../bin/nixgg $out/shims/$t
               done
               for t in gcc g++ cc c++ ar ranlib; do
