@@ -111,3 +111,31 @@ func TestForRealmodePassesThrough(t *testing.T) {
 		t.Errorf("boot/startup = %v, want Placeholder", got)
 	}
 }
+
+// libstub and the vDSO join realmode for the same underlying reason:
+// their per-object rules read object bytes inline. libstub's
+// cmd_stubcopy greps objdump output to decide whether to fail the
+// build; the vDSO does a full `ld -T <script>` link, which shim.LD
+// does not model.
+func TestForInlineInspectionDirsPassThrough(t *testing.T) {
+	for _, p := range []string{
+		"../drivers/firmware/efi/libstub/alignedmem.c",
+		"drivers/firmware/efi/libstub/efi-stub-helper.c",
+		"../arch/x86/entry/vdso/vdso-note.S",
+		"arch/x86/entry/vdso/vclock_gettime.c",
+	} {
+		if got := For(p); got != Passthrough {
+			t.Errorf("For(%q) = %v, want Passthrough", p, got)
+		}
+	}
+	// Neighbouring directories must stay accelerated — the carveouts are
+	// specific subtrees, not whole subsystems.
+	for _, p := range []string{
+		"../drivers/firmware/efi/efi.c",
+		"../arch/x86/entry/common.c",
+	} {
+		if got := For(p); got != Placeholder {
+			t.Errorf("For(%q) = %v, want Placeholder", p, got)
+		}
+	}
+}

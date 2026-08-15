@@ -108,7 +108,31 @@ func For(path string) Mode {
 	// (cmd_zoffset, cmd_voffset) but over the LINKED image rather than
 	// per-TU objects, so they belong to the bzImage stage and are not
 	// reachable from `make vmlinux_o`. Add them here if that changes.
-	case strings.Contains(path, "arch/x86/realmode/"):
+	//
+	// drivers/firmware/efi/libstub is the same phenomenon in a different
+	// costume. cmd_stubcopy is a three-tool pipeline per object:
+	//
+	//	$(STRIP) --strip-debug -o $@ $<
+	//	if $(OBJDUMP) -r $@ | grep <reloc>; then ... /bin/false; fi
+	//	$(OBJCOPY) $(STUBCOPY_FLAGS-y) $< $@
+	//
+	// The middle step decides whether to FAIL THE BUILD based on
+	// objdump's text output. strip and objcopy could each be modelled;
+	// that grep cannot.
+	//
+	// arch/x86/entry/vdso links a full shared object with its own
+	// linker script (`$(LD) -o $@ -T $(lds) $(objs)`), which shim.LD
+	// passes through — it only models `-r` partial links. The vDSO is a
+	// handful of objects, so carving it out is cheaper than teaching the
+	// linker shim about linker scripts.
+	//
+	// All four carveouts share one property: a bounded, special-purpose
+	// subdirectory whose build reads object BYTES inline, rather than
+	// consuming an artifact a derivation could produce. Together they
+	// are well under 1% of a kernel's translation units.
+	case strings.Contains(path, "arch/x86/realmode/"),
+		strings.Contains(path, "drivers/firmware/efi/libstub/"),
+		strings.Contains(path, "arch/x86/entry/vdso/"):
 		return Passthrough
 	case strings.HasPrefix(base, "conftest"):
 		return Realise
