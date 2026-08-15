@@ -86,6 +86,15 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 
 	logf("compile %s -> %s", source, output)
 
+	// Some compiles are meant to fail, and the build reads the failure
+	// rather than the object. Modelling one turns an expected diagnostic
+	// into a dead build. Checked before the scan so we don't pay for
+	// header discovery we are about to throw away.
+	if mode.For(source) == mode.Passthrough {
+		logf("  passthrough: build expects this compile to fail")
+		return Passthrough(realTool, args)
+	}
+
 	// Resolve the real cc for scan-headers to match the caller's tool
 	// role — same reason as the passthrough case above.
 	scannerCC := realTool

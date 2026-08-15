@@ -60,3 +60,32 @@ func TestFor(t *testing.T) {
 		})
 	}
 }
+
+// The kernel's lib/test_fortify/ compiles code that must NOT compile —
+// kbuild expects the error, captures stderr to a .log, and greps the
+// object for __write_overflow. Accelerating those turns an expected
+// diagnostic into a hard build failure, and Realise is no better since
+// `nix build` on a failing compile fails too.
+func TestForFortifyTestsPassThrough(t *testing.T) {
+	for _, p := range []string{
+		"../lib/test_fortify/write_overflow-memcpy.c",
+		"lib/test_fortify/read_overflow-memcpy.c",
+		"/build/linux-6.18.41/lib/test_fortify/write_overflow_field-memset.c",
+	} {
+		if got := For(p); got != Passthrough {
+			t.Errorf("For(%q) = %v, want Passthrough", p, got)
+		}
+	}
+
+	// A path merely mentioning fortify is not the carveout: only the
+	// directory kbuild puts these in.
+	for _, p := range []string{
+		"lib/string_helpers.c",
+		"include/linux/fortify-string.h",
+		"lib/fortify_helpers.c",
+	} {
+		if got := For(p); got != Placeholder {
+			t.Errorf("For(%q) = %v, want Placeholder", p, got)
+		}
+	}
+}
