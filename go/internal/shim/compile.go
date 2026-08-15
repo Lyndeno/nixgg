@@ -90,8 +90,14 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	// rather than the object. Modelling one turns an expected diagnostic
 	// into a dead build. Checked before the scan so we don't pay for
 	// header discovery we are about to throw away.
-	if mode.For(source) == mode.Passthrough {
-		logf("  passthrough: build expects this compile to fail")
+	// Check the OUTPUT as well as the source. The directory carveouts
+	// are about where the object lands, not where its source lives, and
+	// the two differ: drivers/firmware/efi/libstub compiles
+	// ../lib/cmdline.c into libstub/lib-cmdline.o, so keying on the
+	// source alone let those objects through as stubs and libstub's
+	// `strip` then failed on them.
+	if mode.For(source) == mode.Passthrough || mode.For(output) == mode.Passthrough {
+		logf("  passthrough: this object's build reads its bytes inline")
 		return Passthrough(realTool, args)
 	}
 

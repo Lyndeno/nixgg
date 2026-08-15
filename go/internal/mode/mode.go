@@ -120,19 +120,27 @@ func For(path string) Mode {
 	// objdump's text output. strip and objcopy could each be modelled;
 	// that grep cannot.
 	//
+	// arch/x86/purgatory builds purgatory.ro with `ld -r` (which
+	// shim.LD does model) and then RE-links it without -r as
+	// purgatory.chk purely to verify it. That check link passes through
+	// and meets the modelled .ro:
+	//   ld.bfd: purgatory.ro: file format not recognized
+	// Six files; carve it out rather than model verification links.
+	//
 	// arch/x86/entry/vdso links a full shared object with its own
 	// linker script (`$(LD) -o $@ -T $(lds) $(objs)`), which shim.LD
 	// passes through — it only models `-r` partial links. The vDSO is a
 	// handful of objects, so carving it out is cheaper than teaching the
 	// linker shim about linker scripts.
 	//
-	// All four carveouts share one property: a bounded, special-purpose
+	// All of these carveouts share one property: a bounded, special-purpose
 	// subdirectory whose build reads object BYTES inline, rather than
 	// consuming an artifact a derivation could produce. Together they
 	// are well under 1% of a kernel's translation units.
 	case strings.Contains(path, "arch/x86/realmode/"),
 		strings.Contains(path, "drivers/firmware/efi/libstub/"),
-		strings.Contains(path, "arch/x86/entry/vdso/"):
+		strings.Contains(path, "arch/x86/entry/vdso/"),
+		strings.Contains(path, "arch/x86/purgatory/"):
 		return Passthrough
 	case strings.HasPrefix(base, "conftest"):
 		return Realise

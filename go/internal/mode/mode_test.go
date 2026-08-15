@@ -139,3 +139,18 @@ func TestForInlineInspectionDirsPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// The carveout keys on where the OBJECT lands, not where its source
+// lives. libstub compiles ../lib/cmdline.c into
+// libstub/lib-cmdline.o — keying on the source alone let those through
+// as stubs, and libstub's strip then failed on them.
+func TestForKeysOnOutputNotJustSource(t *testing.T) {
+	// The source is an ordinary lib/ file: on its own, accelerate it.
+	if got := For("../lib/cmdline.c"); got != Placeholder {
+		t.Errorf("lib/cmdline.c = %v, want Placeholder", got)
+	}
+	// But the object landing in libstub must not be modelled.
+	if got := For("drivers/firmware/efi/libstub/lib-cmdline.o"); got != Passthrough {
+		t.Errorf("libstub/lib-cmdline.o = %v, want Passthrough", got)
+	}
+}
