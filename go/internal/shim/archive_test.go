@@ -49,8 +49,12 @@ func TestParseARArgs(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name: "no inputs", args: []string{"rcs", "libfoo.a"},
-			wantOK: false,
+			// A CREATING op with no members is real and must be modelled:
+			// kbuild emits it for directories whose objects are all
+			// modules. See TestParseARArgsEmptyCreatingArchive for why
+			// passing these through breaks every ancestor archive.
+			name: "creating op with no inputs", args: []string{"rcs", "libfoo.a"},
+			wantOK: true, wantMods: "rcs", wantArch: "libfoo.a", wantInputs: nil,
 		},
 		{
 			// A nested archive IS a legitimate member: kbuild's
@@ -191,5 +195,37 @@ func TestIsARModifiersAcceptsThin(t *testing.T) {
 	// Still reject things that are plainly not a modifier string.
 	if isARModifiers("built-in.a") {
 		t.Error("a filename was accepted as a modifier string")
+	}
+}
+
+// A creating invocation with no members is legitimate: kbuild emits
+// `ar cDPrST <dir>/built-in.a` for any directory whose objects are all
+// modules. Leaving those to passthrough makes them plain files, which
+// then makes every ANCESTOR archive unmodellable in turn, until
+// `ld -r vmlinux.o` meets a half-modelled vmlinux.a.
+func TestParseARArgsEmptyCreatingArchive(t *testing.T) {
+	mods, archive, inputs, ok := parseARArgs([]string{"cDPrST", "drivers/cache/built-in.a"})
+	if !ok {
+		t.Fatal("empty creating archive rejected; this cascades to every parent")
+	}
+	if mods != "cDPrST" || archive != "drivers/cache/built-in.a" {
+		t.Errorf("mods/archive = %q/%q", mods, archive)
+	}
+	if len(inputs) != 0 {
+		t.Errorf("inputs = %q, want none", inputs)
+	}
+}
+
+// Read-only operations also have no members and must still bail —
+// the discriminator is the creating modifier, not the member count.
+func TestParseARArgsEmptyReadOpStillBails(t *testing.T) {
+	for _, args := range [][]string{
+		{"t", "vmlinux.a"},
+		{"p", "libfoo.a"},
+		{"x", "libfoo.a"},
+	} {
+		if _, _, _, ok := parseARArgs(args); ok {
+			t.Errorf("read-only op %q was modelled", args)
+		}
 	}
 }

@@ -137,7 +137,28 @@ func parseARArgs(args []string) (modifiers, archive string, inputs []string, ok 
 		}
 		inputs = append(inputs, in)
 	}
-	if archive == "" || len(inputs) == 0 {
+	// A creating invocation with NO members is legitimate and must be
+	// modelled. kbuild emits `ar cDPrST <dir>/built-in.a` with an empty
+	// member list for any directory whose objects are all modules, and
+	// leaving those to passthrough is not harmless: the result is a
+	// plain file, its PARENT archive then reports "can't model input
+	// (regular)" and passes through too, and the damage climbs the tree
+	// until `ld -r vmlinux.o <- vmlinux.a` meets a half-modelled
+	// archive and dies with
+	//
+	//	ld.bfd: vmlinux.a: member init/built-in.a in archive is not an object
+	//
+	// One empty archive poisons every ancestor. Verified directly that
+	// `ar DcDPrST empty.a` succeeds and that a parent thin archive can
+	// include the result.
+	//
+	// Read-only operations (`ar t archive.a`) also have no members, and
+	// those must still bail — hence keying on the creating modifiers
+	// rather than on the member count alone.
+	if archive == "" {
+		return "", "", nil, false
+	}
+	if len(inputs) == 0 && !strings.ContainsAny(modifiers, "crq") {
 		return "", "", nil, false
 	}
 	return modifiers, archive, inputs, true
