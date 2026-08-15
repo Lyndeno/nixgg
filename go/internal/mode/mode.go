@@ -1,5 +1,5 @@
 // Package mode decides whether a given shim invocation defers via a
-// placeholder thunk or realises synchronously.
+// placeholder thunk, realises synchronously, or is not modelled at all.
 //
 // Placeholder is the default: every compile writes a .nix expression
 // file and symlinks the output at it. The link shim's inline realise
@@ -88,6 +88,27 @@ func For(path string) Mode {
 	//
 	// — into a hard build failure.
 	case strings.Contains(path, "/test_fortify/"):
+		return Passthrough
+	// arch/x86/realmode/rm builds its symbol list by running `nm` over
+	// the objects and piping the result through sed into a generated
+	// header (arch/x86/realmode/rm/Makefile: `cmd_pasyms = $(NM)
+	// $(real-prereqs) | sed ... > $@`).
+	//
+	// That cannot be deferred the way objtool or objcopy can. Those
+	// consume an object and produce an object, so they become
+	// derivations; this consumes objects and produces TEXT that make
+	// feeds to the next compile. There is no artifact to model, and the
+	// answer is needed inline — a stub yields
+	// "nm: header.o: file format not recognized".
+	//
+	// The realmode stub is ~15 files out of a ~15,000-file kernel, so
+	// passing them through costs almost nothing.
+	//
+	// arch/x86/boot and arch/x86/boot/compressed do the same thing
+	// (cmd_zoffset, cmd_voffset) but over the LINKED image rather than
+	// per-TU objects, so they belong to the bzImage stage and are not
+	// reachable from `make vmlinux_o`. Add them here if that changes.
+	case strings.Contains(path, "arch/x86/realmode/"):
 		return Passthrough
 	case strings.HasPrefix(base, "conftest"):
 		return Realise

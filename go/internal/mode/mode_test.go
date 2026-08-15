@@ -89,3 +89,25 @@ func TestForFortifyTestsPassThrough(t *testing.T) {
 		}
 	}
 }
+
+// arch/x86/realmode/rm generates a header by piping `nm` output through
+// sed. That consumes objects and produces TEXT, so there is no artifact
+// to model and the answer is needed inline — the only correct handling
+// is to let the real compiler produce real objects.
+func TestForRealmodePassesThrough(t *testing.T) {
+	for _, p := range []string{
+		"../arch/x86/realmode/rm/header.S",
+		"arch/x86/realmode/rm/trampoline_64.S",
+		"/build/linux-6.18.41/arch/x86/realmode/rm/wakemain.c",
+	} {
+		if got := For(p); got != Passthrough {
+			t.Errorf("For(%q) = %v, want Passthrough", p, got)
+		}
+	}
+	// arch/x86/boot/startup is NOT in the carveout: its objcopy step is
+	// modelled, and its nm-using siblings act on the linked image at a
+	// later stage.
+	if got := For("../arch/x86/boot/startup/gdt_idt.c"); got != Placeholder {
+		t.Errorf("boot/startup = %v, want Placeholder", got)
+	}
+}
