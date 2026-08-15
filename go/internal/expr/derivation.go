@@ -44,6 +44,13 @@ const (
 	// transform's flags, so changing e.g. objtool's arguments rebuilds
 	// only this thin layer.
 	KindTransform
+	// KindPartialLink: `ld -r` — combine several objects into one
+	// object (not an executable, not an archive).
+	//
+	// Sandbox mode only, same as KindTransform. kbuild reaches it twice:
+	// `cmd_ld_multi_m` fuses a multi-object module's parts, and
+	// `cmd_ld_single` runs it over a single-object module on its own.
+	KindPartialLink
 )
 
 // Derivation is the intermediate representation both serializers
@@ -412,6 +419,17 @@ mkdir -p "%s"
 mkdir -p "%s"
 ar D%s "%s" %s
 `, pathPrefix, d.outDir(), d.ARFlags, d.outPath(), inputs())
+	case KindPartialLink:
+		// `-r` is supplied by the caller's own flag list, not added
+		// here: it is what identified this invocation as a partial link
+		// in the first place, so re-adding it would be a second source
+		// of truth.
+		return fmt.Sprintf(
+			`set -euo pipefail
+export PATH="%s/bin"
+mkdir -p "%s"
+"%s" %s -o "%s" %s
+`, coreutils, d.outDir(), d.ToolBin, shellQuoteFlags(d.Flags), d.outPath(), inputs())
 	case KindTransform:
 		// Copy first, then rewrite the copy: these tools edit in place
 		// and the input is a read-only store path. chmod because store

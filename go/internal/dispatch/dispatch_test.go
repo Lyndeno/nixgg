@@ -59,8 +59,12 @@ func TestFromArgv0(t *testing.T) {
 		{"llvm-ar", ToolAR},
 		{"llvm-ranlib", ToolRanlib},
 
+		// Not a compiler, but modelled: `ld -r` partial links fuse
+		// kbuild's multi-object modules. Anything that is not `-r`
+		// passes straight through — see shim.LD.
+		{"ld", ToolLD},
+
 		// Not compilers.
-		{"ld", ToolUnknown},
 		{"make", ToolUnknown},
 		{"python3", ToolUnknown},
 		{"nixgg", ToolUnknown},

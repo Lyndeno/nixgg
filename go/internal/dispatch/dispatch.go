@@ -28,6 +28,10 @@ const (
 	// compiling it. Reached only when the caller points kbuild.s
 	// `objtool=` make variable at our shim.
 	ToolObjtool
+	// ToolLD: `ld -r` partial links. kbuild fuses multi-object
+	// modules with it (cmd_ld_multi_m) and runs it over single-object
+	// modules too (cmd_ld_single).
+	ToolLD
 )
 
 // Basename returns the argv[0] name we advertise to the sandbox.
@@ -49,6 +53,8 @@ func (t Tool) Basename() string {
 		return "ranlib"
 	case ToolObjtool:
 		return "objtool"
+	case ToolLD:
+		return "ld"
 	}
 	return ""
 }
@@ -110,6 +116,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolRanlib
 	case "objtool":
 		return ToolObjtool
+	case "ld":
+		return ToolLD
 	}
 	return ToolUnknown
 }
