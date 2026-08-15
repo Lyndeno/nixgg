@@ -154,6 +154,33 @@ stdenv0.override (
         drvName = if probeArgs ? name then probeArgs.name else "${probeArgs.pname}-${probeArgs.version}";
         outerName = "gg-build-${drvName}";
 
+        # Honor whatever the wrapped package asked for rather than
+        # forcing it off. Packages that set `__structuredAttrs = true`
+        # write their phases against it — the kernel's own
+        # configurePhase/postInstall use bash ARRAY syntax
+        # (`make "''${makeFlags[@]}"`, `installFlags+=(…)`), which
+        # simply does not exist when structuredAttrs is off, so forcing
+        # it false turned those into silent garbage.
+        #
+        # Default matches make-derivation.nix's own: a package that
+        # never mentions __structuredAttrs still inherits the
+        # nixpkgs-wide setting.
+        structuredAttrs = probeArgs.__structuredAttrs or (config.structuredAttrsByDefault or false);
+
+        # builder-rpc-v0 wants $out unset; /nonexistent keeps stdenv's
+        # _assignFirst happy while making any real write fail loudly.
+        # Where that value has to go depends on the mode: with
+        # structuredAttrs, make-derivation.nix routes bare top-level
+        # attrs into .attrs.json and only `env` reaches the derivation
+        # as environment variables (it merges `env` into the derivation
+        # args wholesale — see its `derivation (derivationArg //
+        # checkedEnv)`).
+        nonexistentOut =
+          if structuredAttrs then
+            { env = (probeArgs.env or { }) // { out = "/nonexistent"; }; }
+          else
+            { out = "/nonexistent"; };
+
         # Store paths the shim's storedeps matcher needs to recognize
         # in -I/-L flags — same computation as mkNixggBuild.nix's
         # knownStorePathInputs, sourced from the wrapped package's own
@@ -196,12 +223,7 @@ stdenv0.override (
                 # for that suffix). Phase 2 keeps the package's real
                 # `outputs`.
                 outputs = [ "out" ];
-                out = "/nonexistent";
-                # Forced off regardless of what the package requests:
-                # under __structuredAttrs, make-derivation.nix only
-                # honors env-nested attrs, not bare top-level ones like
-                # `out` above.
-                __structuredAttrs = false;
+                __structuredAttrs = structuredAttrs;
                 requiredSystemFeatures = (probeArgs.requiredSystemFeatures or [ ]) ++ [ "builder-rpc-v0" ];
                 __contentAddressed = true;
                 outputHashMode = "text";
@@ -229,7 +251,8 @@ stdenv0.override (
                 '' + (probeArgs.preBuild or "");
 
                 postBuild = (probeArgs.postBuild or "") + submitBuildTreeScript outerName;
-              };
+              }
+              // nonexistentOut;
           in
           # extraPhase1Attrs runs last, over dynDrvStdenv's own base
           # attrs — see its docstring for why this is the only way to
@@ -271,7 +294,10 @@ stdenv0.override (
             // {
               phases = "ggRestorePhase checkPhase installPhase fixupPhase installCheckPhase distPhase";
               dontUnpack = true;
-              __structuredAttrs = false;
+              # Same reasoning as phase 1: the package's own
+              # installPhase/fixupPhase run verbatim here, so they must
+              # get the attribute shape they were written against.
+              __structuredAttrs = structuredAttrs;
               ggRestorePhase = ''
                 runHook preGgRestore
                 cp -a ${builtTree}/. "$NIX_BUILD_TOP/"
@@ -280,7 +306,6 @@ stdenv0.override (
                 export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                 runHook postGgRestore
               '';
-              installFlags = (probeArgs.installFlags or "");
               postInstall = ''
                 mkdir -p "$out"
                 cp -a "$DESTDIR/nonexistent/." "$out/"
