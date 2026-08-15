@@ -306,9 +306,29 @@ stdenv0.override (
                 export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                 runHook postGgRestore
               '';
+              # Collect what the install landed under DESTDIR, IF it went
+              # there at all.
+              #
+              # The guard is load-bearing, not defensive padding.
+              # DESTDIR only catches packages whose install is a
+              # `make install`/`cmake --install` honouring it — phase 1
+              # baked prefix=/nonexistent into the generated Makefile,
+              # so those land in $DESTDIR/nonexistent. Plenty of
+              # packages do something else entirely: a hand-written
+              # installPhase that writes straight to $out (very common
+              # in nixpkgs), or explicit destination flags — the kernel
+              # passes INSTALL_PATH/INSTALL_MOD_PATH and never consults
+              # DESTDIR. For those, $DESTDIR/nonexistent is never
+              # created and an unconditional `cp -a` failed the build
+              # outright, after a successful install.
+              #
+              # If $out comes out empty, suspect an install that wrote
+              # somewhere neither branch covers.
               postInstall = ''
                 mkdir -p "$out"
-                cp -a "$DESTDIR/nonexistent/." "$out/"
+                if [ -d "$DESTDIR/nonexistent" ]; then
+                  cp -a "$DESTDIR/nonexistent/." "$out/"
+                fi
               '' + (probeArgs.postInstall or "");
             };
         in
