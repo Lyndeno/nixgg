@@ -66,6 +66,7 @@ func storeInput(c classify.Result, callerPath string) (expr.Input, expr.JSONDrvI
 // passthrough runs the moment an input can't be modeled, and its
 // error is returned with ok=false.
 func classifyInputs(
+	cfg *toolchain.Config,
 	inputs []string, altPrefix string, l paths.Layout, logPrefix string, passthrough func() error,
 ) (linkInputs []expr.Input, jsonInputs []expr.JSONDrvInput, err error, ok bool) {
 	linkInputs = make([]expr.Input, 0, len(inputs))
@@ -86,6 +87,40 @@ func classifyInputs(
 			// Only meaningful when we're also in sandbox mode.
 			jsonInputs = append(jsonInputs, expr.JSONDrvInput{
 				Kind: "drv", Ref: c.Ref, Name: filepath.Base(in),
+			})
+		case classify.Regular:
+			// A real file nixgg did not produce. Not every input comes
+			// from a shim: the kernel compiles some objects with rustc
+			// (rust/core.o, drivers/gpu/drm/drm_panic_qr.o), which nixgg
+			// does not model, so they are ordinary files on disk.
+			//
+			// Bailing here is not a local decision. An unmodellable input
+			// makes THIS archive passthrough, which makes it a plain file,
+			// which makes its parent unmodellable in turn — the same
+			// cascade the empty-archive case caused, climbing from
+			// drivers/gpu/drm all the way to vmlinux.a.
+			//
+			// So put the file in the store and depend on its content. It
+			// is content-addressed, so this stays deterministic; the cost
+			// is one `nix store add` for an input that is rare by
+			// construction.
+			//
+			// Sandbox mode only. Native mode has no cascade to break (its
+			// inputs are thunks on disk, and a Regular there means the
+			// caller is doing something we deliberately do not model), and
+			// adding a store round-trip to that path would change drv
+			// content for builds that work today.
+			if !sandbox.Enabled() {
+				logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
+				return nil, nil, passthrough(), false
+			}
+			sp, err := storeAddLooseFile(cfg, in)
+			if err != nil {
+				logf("%s passthrough: store-add %s failed: %v", logPrefix, in, err)
+				return nil, nil, passthrough(), false
+			}
+			jsonInputs = append(jsonInputs, expr.JSONDrvInput{
+				Kind: "src", Ref: filepath.Base(sp), Name: filepath.Base(in),
 			})
 		default:
 			logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
@@ -117,4 +152,31 @@ func maybeSubmit(cfg *toolchain.Config, drvPath, path string, defaultSubmit bool
 	} else {
 		logf("  submitted: %s", drvPath)
 	}
+}
+
+// storeAddLooseFile puts a single build-tree file into the store as a
+// DIRECTORY containing it.
+//
+// `nix store add <file>` would give a store path that IS the file, but
+// both serializers render an input's argv token as Ref+"/"+Name and
+// expect Ref to be a directory — the shape every drv output already
+// has. Staging into a one-file directory keeps that invariant instead
+// of special-casing the emitters, which are the byte-identity-critical
+// part of the codebase.
+func storeAddLooseFile(cfg *toolchain.Config, path string) (string, error) {
+	base := filepath.Base(path)
+	tmp, err := os.MkdirTemp(os.Getenv("NIX_BUILD_TOP"), "gg-loose-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, base), src, 0o444); err != nil {
+		return "", err
+	}
+	return sandbox.StoreAddScan(cfg, base, tmp)
 }

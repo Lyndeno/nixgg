@@ -50,7 +50,7 @@ func LD(args []string, cfg *toolchain.Config, l paths.Layout) error {
 
 	logf("ld -r %s <- %s", output, joinBase(inputs))
 
-	_, jsonInputs, err, ok := classifyInputs(inputs, altStorePrefix(cfg.Store), l, "ld",
+	_, jsonInputs, err, ok := classifyInputs(cfg, inputs, altStorePrefix(cfg.Store), l, "ld",
 		func() error { return Passthrough(real, args) })
 	if !ok {
 		return err
