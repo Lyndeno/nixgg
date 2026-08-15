@@ -342,9 +342,21 @@ stdenv0.override (
               #
               # If $out comes out empty, suspect an install that wrote
               # somewhere neither branch covers.
+              # The mkdir lives INSIDE the guard, and that matters as
+              # much as the guard itself: `mkdir -p "$out"` assumes $out
+              # is a directory, and not every derivation's is. nixpkgs'
+              # linux-config installs with `mv $buildRoot/.config $out`
+              # — a single FILE. Pre-creating $out as a directory made
+              # that mv drop the config *inside* it, and the failure
+              # surfaced two derivations later as the kernel's
+              # `ln -sv ${configfile} $buildRoot/.config` producing
+              # ".config: Is a directory".
+              #
+              # Packages that install themselves need nothing from us
+              # here; only the DESTDIR path needs a destination created.
               postInstall = ''
-                mkdir -p "$out"
                 if [ -d "$DESTDIR/nonexistent" ]; then
+                  mkdir -p "$out"
                   cp -a "$DESTDIR/nonexistent/." "$out/"
                 fi
               '' + (probeArgs.postInstall or "");
