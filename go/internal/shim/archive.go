@@ -38,6 +38,11 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return Passthrough(realARFor(cfg), args)
 	}
 
+	if carvedOut(archive) {
+		logf("ar passthrough: %s is in a carved-out subtree", archive)
+		return Passthrough(realARFor(cfg), args)
+	}
+
 	logf("archive %s <- %s", archive, joinBase(inputs))
 
 	altPrefix := altStorePrefix(cfg.Store)

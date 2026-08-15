@@ -6,6 +6,7 @@ import (
 
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/mode"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
@@ -179,4 +180,25 @@ func storeAddLooseFile(cfg *toolchain.Config, path string) (string, error) {
 		return "", err
 	}
 	return sandbox.StoreAddScan(cfg, base, tmp)
+}
+
+// carvedOut reports whether a subtree is excluded from modelling.
+//
+// mode.For's directory carveouts mean "nixgg does not model anything
+// here" — but until run 10 only the compile shim consulted it. That was
+// survivable by accident: the compiles passed through, so the archive
+// and link shims saw Regular inputs and bailed, and the whole subtree
+// fell through together.
+//
+// Store-adding Regular inputs removed that accident. arch/x86/purgatory
+// compiles passed through as intended, then `ld -r` happily modelled
+// purgatory.ro from the store-added objects — and purgatory.chk, a full
+// link that is passed through, met the stub:
+//
+//	ld.bfd: purgatory.ro: file format not recognized
+//
+// So every shim that produces an artifact has to honour the carveout
+// directly rather than inherit it from its inputs.
+func carvedOut(path string) bool {
+	return mode.For(path) == mode.Passthrough
 }
