@@ -111,10 +111,28 @@ func parseARArgs(args []string) (modifiers, archive string, inputs []string, ok 
 	if !isARModifiers(modifiers) {
 		return
 	}
+	// `a`, `b`, `i` and `N` each take a positional argument that follows
+	// the modifier string (`ar rN <count> <archive> <member>...`), which
+	// shifts the archive name one slot right. Their semantics —
+	// insert-relative-to-member, use-instance-N — are member mutations
+	// this shim deliberately does not model.
+	//
+	// Bail explicitly. Until now these were rejected only by accident:
+	// the archive name in `ar rN 3 archive.a obj.o` failed the
+	// members-must-end-in-.o check. Allowing `.a` members for kbuild
+	// removed that accident, so the guard has to be real.
+	if strings.ContainsAny(modifiers, "abiN") {
+		return "", "", nil, false
+	}
 	archive = args[1]
 	for _, in := range args[2:] {
-		if !strings.HasSuffix(in, ".o") {
-			// Non-.o input to ar — skip modeling.
+		// `.a` members are not a curiosity: kbuild nests archives, so
+		// lib/math/built-in.a lists lib/math/tests/built-in.a as a
+		// member alongside its own objects. Rejecting them sent every
+		// kernel directory down the passthrough path, where the real
+		// `ar` then met a drvref stub instead of an object file.
+		if !strings.HasSuffix(in, ".o") && !strings.HasSuffix(in, ".a") {
+			// Anything else — skip modeling.
 			return "", "", nil, false
 		}
 		inputs = append(inputs, in)
@@ -131,7 +149,12 @@ func isARModifiers(s string) bool {
 	}
 	// Union of the modifier characters ar accepts. Anything outside
 	// means we're looking at a positional arg, not modifiers.
-	allowed := "cruvsDxtpqRUbNaimoPS"
+	//
+	// `T` (thin archive) is in here deliberately. The kernel builds
+	// every built-in.a with `ar cDPrST`, and its absence meant that one
+	// character sent the whole invocation to passthrough — where the
+	// real ar was handed drvref stubs.
+	allowed := "cruvsDxtpqRUbNaimoPST"
 	for _, r := range s {
 		if !strings.ContainsRune(allowed, r) {
 			return false
