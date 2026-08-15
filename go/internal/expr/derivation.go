@@ -30,6 +30,20 @@ const (
 	KindCompile Kind = iota // per-TU compile: builder.nix
 	KindLink                // linker step: linker.nix
 	KindArchive             // ar step: archiver.nix
+	// KindTransform: rewrite one existing object in place.
+	//
+	// Sandbox mode only — there is no native-mode helper for it, since
+	// the tools that need it (kbuild's objtool, and its `ld -r` for
+	// single-object modules) only appear in builds that already require
+	// the sandbox.
+	//
+	// Unlike the other three this produces no new artifact: it consumes
+	// one object and emits the same object, modified. Keeping it a
+	// separate derivation rather than folding it into the compile is
+	// deliberate — the compile stays cacheable independently of the
+	// transform's flags, so changing e.g. objtool's arguments rebuilds
+	// only this thin layer.
+	KindTransform
 )
 
 // Derivation is the intermediate representation both serializers
@@ -90,6 +104,14 @@ type Derivation struct {
 
 	// Archive-only: `ar` modifier string (e.g. "rcs").
 	ARFlags string
+
+	// Transform-only: absolute /nix/store/… path of the binary that
+	// rewrites the object. Not taken from PATH like the compiler and
+	// `ar`, because this tool is built by the wrapped project itself
+	// (kbuild compiles objtool during `make prepare`) and reaches the
+	// store only because the shim adds it there — see
+	// shim.storeAddTool.
+	ToolBin string
 
 	// /nix/store/… roots referenced by Flags or WrapperEnv content;
 	// must be mounted in the sandbox. Serialized as _storeDeps env var
@@ -390,6 +412,22 @@ mkdir -p "%s"
 mkdir -p "%s"
 ar D%s "%s" %s
 `, pathPrefix, d.outDir(), d.ARFlags, d.outPath(), inputs())
+	case KindTransform:
+		// Copy first, then rewrite the copy: these tools edit in place
+		// and the input is a read-only store path. chmod because store
+		// paths arrive without write permission.
+		//
+		// PATH carries coreutils only — no compiler is involved, and the
+		// transform binary is invoked by absolute path.
+		return fmt.Sprintf(
+			`set -euo pipefail
+export PATH="%s/bin"
+mkdir -p "%s"
+cp %s "%s"
+chmod u+w "%s"
+"%s" %s "%s"
+`, coreutils, d.outDir(), inputs(), d.outPath(), d.outPath(),
+			d.ToolBin, shellQuoteFlags(d.Flags), d.outPath())
 	}
 	return ""
 }
