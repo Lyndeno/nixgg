@@ -162,6 +162,20 @@ func copyRecursive(src, dst string) error {
 			return err
 		}
 		for _, e := range entries {
+			// skipNames applies at EVERY depth, not just the root.
+			//
+			// StageForScan's own loop filters only its top-level
+			// ReadDir, which is not where these live: nixgg's scratch
+			// dir sits at the project root chosen by paths.Resolve, so
+			// on a kernel it is <src>/linux-6.18.41/build/.nixgg — three
+			// levels down, and copied in full by this function.
+			//
+			// Walk already skips by name at any depth (it uses WalkDir),
+			// so the two halves of the assembly disagreed about what
+			// counts as build output until this check existed.
+			if skipNames[e.Name()] {
+				continue
+			}
 			if err := copyRecursive(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
 				return err
 			}

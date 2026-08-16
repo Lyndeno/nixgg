@@ -162,8 +162,12 @@ func TestStageForScanIsSelfExcluding(t *testing.T) {
 // Neither Walk nor StageForScan may look inside it.
 func TestNixggScratchDirIsExcluded(t *testing.T) {
 	root := t.TempDir()
-	// A staged farm, as shared staging would leave it.
-	farm := filepath.Join(root, ".nixgg", "srcs", "tu0")
+	// A staged farm at the depth it actually occurs: nixgg puts its
+	// scratch dir at the project root, which on a kernel is
+	// <root>/linux-6.18.41/build/.nixgg — NOT the top level. The first
+	// version of this test used the top level and passed against code
+	// that only filtered StageForScan's own ReadDir loop.
+	farm := filepath.Join(root, "linux-6.18.41", "build", ".nixgg", "srcs", "tu0")
 	if err := os.MkdirAll(farm, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -171,11 +175,11 @@ func TestNixggScratchDirIsExcluded(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A thunk, and a stub that must NOT be mistaken for build output.
-	if err := os.WriteFile(filepath.Join(root, ".nixgg", "scan-cache"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "linux-6.18.41", "build", ".nixgg", "scan-cache"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Real output alongside it.
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("out"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "linux-6.18.41", "build", "real.txt"), []byte("out"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,11 +187,11 @@ func TestNixggScratchDirIsExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(filepath.Join(staged, ".nixgg")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(staged, "linux-6.18.41", "build", ".nixgg")); !os.IsNotExist(err) {
 		t.Error(".nixgg was copied into the staged tree; its closure would pull in " +
 			"every staged source object")
 	}
-	if _, err := os.Lstat(filepath.Join(staged, "real.txt")); err != nil {
+	if _, err := os.Lstat(filepath.Join(staged, "linux-6.18.41", "build", "real.txt")); err != nil {
 		t.Errorf("real build output was not staged: %v", err)
 	}
 }
