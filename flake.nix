@@ -433,10 +433,31 @@
           # shape directly.
           exampleResults = builtins.mapAttrs (_: e: e.package) examples;
           exampleShells = pkgs.lib.mapAttrs' (n: e: pkgs.lib.nameValuePair "${n}-shell" e.shell) examples;
+
+          # `.#<name>-shared` is the same example definition with
+          # sharedStaging flipped on — staged source trees become symlink
+          # farms into per-file store objects instead of per-TU copies.
+          #
+          # Generated rather than hand-written so these cannot drift from
+          # the definitions above, and wrapped at the mkNixggBuild seam so
+          # each example keeps its own args untouched.
+          #
+          # These exist for tests/shared-closure.sh, which has to build for
+          # real: the property it checks (that `nix store add --scan`
+          # records symlink targets as references) is unobservable outside
+          # a recursive-nix builder. They are ordinary derivations, so
+          # they are also the way to try shared staging on any example.
+          sharedExamples = pkgs.lib.mapAttrs'
+            (n: def: pkgs.lib.nameValuePair "${n}-shared"
+              (import def.dir ({
+                mkNixggBuild = args: mkNixggBuild (args // { sharedStaging = true; });
+              } // def.args)).package)
+            exampleDefs;
         in
         toolchain
         // exampleResults   # .#hello .#lua .#fmt .#mosh .#redis .#ffmpeg .#gcc .#two-phase .#llvm
         // exampleShells    # .#<name>-shell for each of the above
+        // sharedExamples   # .#<name>-shared: same, with sharedStaging on
         // dynDrvExamples   # .#hello-dyndrv .#mosh-dyndrv .#zstd-dyndrv
         // {
           # Extras an individual example exposes beyond .result/.shell.

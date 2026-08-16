@@ -47,6 +47,9 @@
   nativeBuildInputs ? [ ],
   buildInputs ? [ ],
   propagatedBuildInputs ? [ ],
+  # Stage each TU as a farm of symlinks into per-file store objects.
+  # Sandbox mode only, off by default — see dynDrvStdenv.sharedStaging.
+  sharedStaging ? false,
 }:
 
 let
@@ -210,6 +213,9 @@ let
       NIXGG_STORE          = "auto";
       NIXGG_SANDBOX        = "1";
       NIXGG_SANDBOX_TARGET = target;
+    }
+    // lib.optionalAttrs sharedStaging { NIXGG_SHARED_STAGE = "1"; }
+    // {
 
       # See scrubWrapperEnv above for what this does and why. Two points
       # specific to the sandbox side: the shims/ dir goes ahead of the
