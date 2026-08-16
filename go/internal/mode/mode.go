@@ -133,6 +133,13 @@ func For(path string) Mode {
 	// handful of objects, so carving it out is cheaper than teaching the
 	// linker shim about linker scripts.
 	//
+	// scripts/mod builds elfconfig.h by running its own tool over an
+	// object: `mk_elfconfig < scripts/mod/empty.o` (scripts/mod/Makefile).
+	// Whether that lands in configurePhase (bypassed, harmless) or in
+	// buildPhase (modelled, fatal) depends on when make schedules
+	// prepare0 — observed both ways across runs. Carve it out so the
+	// outcome does not hinge on that ordering.
+	//
 	// All of these carveouts share one property: a bounded, special-purpose
 	// subdirectory whose build reads object BYTES inline, rather than
 	// consuming an artifact a derivation could produce. Together they
@@ -140,7 +147,8 @@ func For(path string) Mode {
 	case strings.Contains(path, "arch/x86/realmode/"),
 		strings.Contains(path, "drivers/firmware/efi/libstub/"),
 		strings.Contains(path, "arch/x86/entry/vdso/"),
-		strings.Contains(path, "arch/x86/purgatory/"):
+		strings.Contains(path, "arch/x86/purgatory/"),
+		strings.Contains(path, "scripts/mod/"):
 		return Passthrough
 	case strings.HasPrefix(base, "conftest"):
 		return Realise

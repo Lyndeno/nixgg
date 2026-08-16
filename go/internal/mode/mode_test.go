@@ -154,3 +154,19 @@ func TestForKeysOnOutputNotJustSource(t *testing.T) {
 		t.Errorf("libstub/lib-cmdline.o = %v, want Passthrough", got)
 	}
 }
+
+// scripts/mod runs `mk_elfconfig < empty.o` to generate elfconfig.h.
+// Whether that runs under configurePhase's bypass or in buildPhase
+// depends on when make schedules prepare0 — seen both ways — so the
+// carveout must make the outcome independent of that ordering.
+func TestForScriptsModPassesThrough(t *testing.T) {
+	for _, p := range []string{
+		"../scripts/mod/empty.c",
+		"scripts/mod/empty.o",
+		"scripts/mod/devicetable-offsets.c",
+	} {
+		if got := For(p); got != Passthrough {
+			t.Errorf("For(%q) = %v, want Passthrough", p, got)
+		}
+	}
+}
