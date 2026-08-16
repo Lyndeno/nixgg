@@ -101,6 +101,39 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return Passthrough(realTool, args)
 	}
 
+	// A source that is not a regular file cannot be modelled: there are
+	// no bytes to content-address. In practice this is exactly one thing
+	// — /dev/null — and it is how every build system asks the compiler a
+	// QUESTION rather than requesting an artifact:
+	//
+	//	$(CC) -Werror $(FLAGS) <option> -c -x c /dev/null -o "$$TMP"
+	//
+	// That is kbuild's cc-option (scripts/Makefile.compiler), whose
+	// try-run keys purely on the exit status. as-option, cc-disable-warning
+	// and friends share the shape, and autoconf emits the same idiom.
+	//
+	// The answer must be the REAL compiler's verdict on the option, so
+	// the only correct response is to get out of the way. Any error the
+	// shim raises here is silently reinterpreted as "the compiler does
+	// not support this flag", and the build then proceeds — quietly
+	// wrong — with a degraded flag set.
+	//
+	// That is not hypothetical. Under shared staging the shim tried to
+	// `nix store add` /dev/null, which fails because a character device
+	// has no NAR representation, so EVERY cc-option answered "n":
+	//
+	//	CCOPT mfentry = n   CCOPT fno-PIE = n   CCOPT BOGUS = n
+	//
+	// The kernel dropped -DCC_USING_FENTRY and died ~45 minutes later in
+	// a completely unrelated place, at a #error in asm/ftrace.h. Copying
+	// staging happened to survive only by accident (reading /dev/null
+	// yields empty bytes, so it staged an empty file), which is why this
+	// guard belongs here rather than in the sharing code.
+	if !isRegularFile(source) {
+		logf("  passthrough: %s is not a regular file (compiler probe)", source)
+		return Passthrough(realTool, args)
+	}
+
 	// Resolve the real cc for scan-headers to match the caller's tool
 	// role — same reason as the passthrough case above.
 	scannerCC := realTool
@@ -658,4 +691,14 @@ func writeDepFile(path, output, source string, headers []scan.Header) error {
 		return fmt.Errorf("write depfile %s: %w", path, err)
 	}
 	return nil
+}
+
+// isRegularFile reports whether path is a regular file. A symlink to a
+// regular file counts (Stat follows); a character device, fifo or
+// directory does not. Errors count as "not regular" so a source that
+// cannot be stat'd goes to the real compiler, which will produce the
+// caller's expected diagnostic rather than ours.
+func isRegularFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
 }
