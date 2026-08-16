@@ -322,10 +322,10 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 	}
 
 	return &Result{
-		Headers:      headers,
-		ProjectRoot:  projectRoot,
-		StagedIFlags: iflags,
-		StoreIFlags:  storeFlags,
+		Headers:            headers,
+		ProjectRoot:        projectRoot,
+		StagedIFlags:       iflags,
+		StoreIFlags:        storeFlags,
 		StagedIncludeFlags: includeFlags,
 	}, deps, nil
 }
@@ -347,12 +347,36 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 // before -isystem ones. Every TU reaching SmallVector-style code failed
 // with "'struct tm' has no member".
 //
-// "-I." is always first so the staged root is on the include path.
-// Results are deduped by rel path, so a caller's `-I.` (== cwd == root)
-// or a repeated dir does not emit twice.
+// Include ORDER is preserved exactly as the caller gave it, because -I
+// order is semantics, not style: the first directory containing the
+// named file wins, so reordering silently changes which header a TU
+// compiles against.
+//
+// This used to force "-I." to the front, on the reasoning that the
+// staged root must be on the include path. It must — but putting it
+// FIRST makes the staged root shadow every other -I dir. The kernel has
+// two headers that differ only in which -I dir finds them:
+//
+//	include/net/nfc/nfc.h   the public one, defining struct nfc_dev
+//	net/nfc/nfc.h           the private one, USING struct nfc_dev
+//
+// kbuild passes `-I../include … -I../. -I.`, with the root last, so
+// `#include <net/nfc/nfc.h>` finds the public header. With -I. hoisted
+// first it found the private one instead, and net/nfc/af_nfc.c died on
+//
+//	net/nfc/nfc.h:103:24: error: invalid use of undefined type 'struct nfc_dev'
+//
+// 19,000 compiles into a kernel build. Nothing smaller caught it: the
+// bug needs two same-suffix headers reachable from different -I dirs,
+// which no example build has.
+//
+// So emit the caller's dirs in their original order — including their
+// own `-I.` at the position they chose — and append a synthetic `-I.`
+// only if they never asked for the root themselves. Results are deduped
+// by rel path so a repeated dir does not emit twice.
 func stagedIFlags(projectRoot string, callerDirs []string) []string {
-	iflags := []string{"-I."}
-	seenRel := map[string]bool{".": true}
+	var iflags []string
+	seenRel := map[string]bool{}
 	for _, p := range callerDirs {
 		rel := "."
 		if p != projectRoot {
@@ -366,9 +390,13 @@ func stagedIFlags(projectRoot string, callerDirs []string) []string {
 			continue
 		}
 		seenRel[rel] = true
-		if rel != "." {
-			iflags = append(iflags, "-I"+rel)
-		}
+		iflags = append(iflags, "-I"+rel)
+	}
+	// The staged root has to be reachable even when the caller never
+	// named it — a bare `cc -c foo.c` relies on it. Last, so it cannot
+	// shadow a directory the caller did name.
+	if !seenRel["."] {
+		iflags = append(iflags, "-I.")
 	}
 	return iflags
 }
@@ -596,10 +624,10 @@ func isPrefixOfPath(root, path string) bool {
 // the fs walk. We use a compact newline-delimited format instead of
 // JSON to keep parse cost low.
 //
-//   line 0:   PROJECT_ROOT=<path>
-//   line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
-//   line ..:  STORE_IFLAG=<flag>   (repeated)
-//   line ..:  HEADER=<abs>\t<rel>  (repeated)
+//	line 0:   PROJECT_ROOT=<path>
+//	line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
+//	line ..:  STORE_IFLAG=<flag>   (repeated)
+//	line ..:  HEADER=<abs>\t<rel>  (repeated)
 func encodeResult(r *Result) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "PROJECT_ROOT=%s\n", r.ProjectRoot)
