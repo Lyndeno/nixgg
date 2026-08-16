@@ -58,3 +58,55 @@ func TestIsRegularFile(t *testing.T) {
 		})
 	}
 }
+
+// .incbin names a file in a string the preprocessor never reads, so
+// `gcc -M` cannot report it and the TU dies in the ASSEMBLER instead:
+//
+//	/build/ccaMdNtQ.s:11: Error: file not found: kernel/config_data.gz
+//
+// Detection is a substring search by design — the directive appears in C
+// string literals, in .S files, and behind #ifdefs, so anything short of
+// running the preprocessor is an approximation. The costs are asymmetric:
+// a false positive is one un-accelerated compile, a false negative is a
+// build failure far from its cause.
+func TestUsesIncbin(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Verbatim shape from kernel/configs.c.
+	configsC := write("configs.c", `
+#include <linux/init.h>
+asm (
+"	.section \".rodata\", \"a\"		\n"
+"	.global config_data			\n"
+"config_data:					\n"
+"	.incbin \"kernel/config_data.gz\"	\n"
+);
+`)
+	// A bare .S user, as in usr/initramfs_data.S.
+	initramfsS := write("initramfs_data.S", "	.incbin \"usr/initramfs_data.cpio\"\n")
+	plain := write("plain.c", "int main(void){return 0;}\n")
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"kernel/configs.c shape", configsC, true},
+		{"bare .S", initramfsS, true},
+		{"ordinary source", plain, false},
+		{"missing file is not a blocker", filepath.Join(dir, "absent.c"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := usesIncbin(tc.path); got != tc.want {
+				t.Errorf("usesIncbin(%s) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
