@@ -31,9 +31,38 @@ type Stub struct {
 // build output. ".nix-socket" is builder-rpc-v0's own unix socket —
 // `nix store add --scan` can't ingest a socket. ".gg-stage" is
 // StageForScan's own working directory.
+//
+// ".nixgg" is nixgg's own scratch dir — staged source trees, thunks and
+// scan caches. It is scaffolding, never output, and capturing it was
+// quietly the most expensive thing the assembly did.
+//
+// Under shared staging .nixgg/srcs holds one symlink farm per TU. On a
+// kernel that is 19,167 farms of ~225 symlinks — about 4.3 MILLION
+// symlinks — which StageForScan copied one at a time and `nix store add
+// --scan` then ingested, recording a reference to every one of the
+// 34,370 distinct file objects they point at.
+//
+// Three separate failures traced back here, and none of them looked like
+// it at the time:
+//
+//   - The final drv's closure was 82,477 paths, 34,370 of them source
+//     files, which blew past fs.mount-max when Nix bind-mounted the lot.
+//     The .o outputs were never the problem — their own closure is 1.
+//     The captured TREE was dragging every staged header along.
+//   - The assembly consumed >22 GB copying and NAR-ing those symlinks,
+//     which is what put the build within minutes of filling the disk.
+//   - Both costs scale with TU count, so they were invisible on every
+//     example build and unavoidable on a kernel.
+//
+// Excluding it is not a workaround. Phase 2 re-runs make under the
+// shims and recreates whatever it needs; the staged sources are already
+// in the store as derivation inputs; and sandbox mode marks outputs with
+// drvref stub FILES, so nothing in the tree points into .nixgg. Only the
+// scan cache is lost, which costs a little time and no correctness.
 var skipNames = map[string]bool{
 	".nix-socket": true,
 	".gg-stage":   true,
+	".nixgg":      true,
 }
 
 // Walk finds every drvref stub under root, in deterministic

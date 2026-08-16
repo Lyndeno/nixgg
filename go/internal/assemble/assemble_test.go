@@ -150,3 +150,44 @@ func TestStageForScanIsSelfExcluding(t *testing.T) {
 		t.Errorf("a.txt should be staged: %v", err)
 	}
 }
+
+// .nixgg is nixgg's own scratch dir. Capturing it into the assembled
+// tree was the root of the kernel build's scaling failures: under shared
+// staging it holds one symlink farm per TU (19,167 farms x ~225 symlinks
+// on a kernel), so StageForScan copied millions of symlinks and
+// `nix store add --scan` recorded a reference to every file object they
+// pointed at — 34,370 of them in the final drv's closure, which is what
+// exceeded fs.mount-max and nearly filled the disk.
+//
+// Neither Walk nor StageForScan may look inside it.
+func TestNixggScratchDirIsExcluded(t *testing.T) {
+	root := t.TempDir()
+	// A staged farm, as shared staging would leave it.
+	farm := filepath.Join(root, ".nixgg", "srcs", "tu0")
+	if err := os.MkdirAll(farm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/nix/store/aaa-hdr.h", filepath.Join(farm, "hdr.h")); err != nil {
+		t.Fatal(err)
+	}
+	// A thunk, and a stub that must NOT be mistaken for build output.
+	if err := os.WriteFile(filepath.Join(root, ".nixgg", "scan-cache"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Real output alongside it.
+	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("out"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := StageForScan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(staged, ".nixgg")); !os.IsNotExist(err) {
+		t.Error(".nixgg was copied into the staged tree; its closure would pull in " +
+			"every staged source object")
+	}
+	if _, err := os.Lstat(filepath.Join(staged, "real.txt")); err != nil {
+		t.Errorf("real build output was not staged: %v", err)
+	}
+}
