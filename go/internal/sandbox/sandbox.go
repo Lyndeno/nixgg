@@ -59,7 +59,7 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // objects and record them — required inside a sandbox where
 // unregistered references cause build-time errors.
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
-	cmd := exec.Command(cfg.Nix, "--offline", "store", "add", "--scan", "-n", name, path)
+	cmd := exec.Command(cfg.Nix, "--offline", "store", "add", "--scan", "-n", StoreName(name), path)
 	cmd.Env = os.Environ()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
