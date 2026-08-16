@@ -50,14 +50,43 @@ func cmdAssemble(args []string) error {
 	}
 	treeBase := expr.StoreBasename(treeStore)
 
-	drv := assemble.Build(assemble.BuildParams{
+	params := assemble.BuildParams{
 		Name:      name,
 		System:    cfg.System,
 		Bash:      cfg.BashRoot,
 		Coreutils: cfg.CoreutilsRoot,
 		TreeSrc:   treeBase,
 		Stubs:     stubs,
-	})
+	}
+
+	var drv expr.JSONDrv
+	if assemble.ScriptFits(stubs, assemble.MaxScriptBytes) {
+		// Small build: emit exactly the drv we always did.
+		drv = assemble.Build(params)
+	} else {
+		// Too many stubs to name in one `bash -c` argument — see
+		// chunk.go for why that limit is not raisable. Split the copies
+		// across chunk drvs and overlay their outputs.
+		chunks := assemble.ChunkStubs(stubs, assemble.MaxScriptBytes)
+		fmt.Fprintf(os.Stderr, "[nixgg assemble] script too large for one drv; "+
+			"splitting %d stubs across %d chunks\n", len(stubs), len(chunks))
+		chunkPaths := make([]string, 0, len(chunks))
+		for i, c := range chunks {
+			cd := assemble.BuildChunk(assemble.ChunkParams{
+				Name:      fmt.Sprintf("%s-chunk-%d", name, i),
+				System:    cfg.System,
+				Bash:      cfg.BashRoot,
+				Coreutils: cfg.CoreutilsRoot,
+				Stubs:     c,
+			})
+			p, err := sandbox.DerivationAdd(cfg, cd)
+			if err != nil {
+				return fmt.Errorf("chunk %d: %w", i, err)
+			}
+			chunkPaths = append(chunkPaths, p)
+		}
+		drv = assemble.BuildOverlay(params, chunkPaths)
+	}
 
 	drvPath, err := sandbox.DerivationAdd(cfg, drv)
 	if err != nil {
