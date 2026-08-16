@@ -163,7 +163,14 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		tuKey = rel
 	}
 	tuID := stage.TUID(tuKey)
-	stageRes, err := stage.Sources(l, tuID, entries)
+	var stageRes stage.Result
+	if sharedStagingEnabled() {
+		stageRes, err = stage.SourcesShared(l, tuID, entries, func(abs string) (string, error) {
+			return storeShared(cfg, abs)
+		})
+	} else {
+		stageRes, err = stage.Sources(l, tuID, entries)
+	}
 	if err != nil {
 		return err
 	}

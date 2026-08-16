@@ -76,6 +76,15 @@
   # IS reachable via a plain .overrideAttrs on the returned package, so
   # this exists mostly for symmetry.
   extraPhase2Attrs ? (finalAttrs: old: old),
+  # Stage each TU as a farm of symlinks into per-file store objects
+  # instead of copying its whole header closure. Sandbox mode only:
+  # it relies on `nix store add --scan` recording symlink targets as
+  # references, and native mode imports its staging dir as a plain path
+  # literal, which does no scanning — the targets would dangle.
+  #
+  # Off by default because that asymmetry suspends the native/sandbox
+  # drv-equivalence guarantee, which is the project's core invariant.
+  sharedStaging ? false,
 }:
 
 let
@@ -115,6 +124,7 @@ let
     export NIXGG_STORE="auto"
     export NIXGG_SYSTEM="${system}"
     export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
+    ${lib.optionalString sharedStaging "export NIXGG_SHARED_STAGE=1"}
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
     export NIX_CONFIG="extra-experimental-features = nix-command ca-derivations dynamic-derivations"
   '';
@@ -125,9 +135,64 @@ let
   # stub the shims left, builds one assembly drv that restores the tree
   # and resolves each stub, and submits it as this derivation's "out".
   # See go/internal/cli/assemble.go / go/internal/assemble/.
+  # Also dumps phase 1's exported shell state. Splitting one
+  # mkDerivation across two derivations splits the SHELL too, and
+  # packages routinely export a variable in an early phase and read it
+  # in a later one. nixpkgs' own kernel does exactly this: its
+  # configurePhase does `export buildRoot=...`, and linux-config's
+  # installPhase is `mv $buildRoot/.config $out` — which in phase 2
+  # became `mv /.config`, i.e. "cannot stat '/.config'".
+  #
+  # See ggRestoreEnv for why replaying this is safe.
   submitBuildTreeScript = drvName: ''
     realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
+    export -p > "$NIX_BUILD_TOP/.gg-env"
     ${nixgg}/bin/nixgg assemble "$NIX_BUILD_TOP" "${drvName}"
+  '';
+
+  # Replay phase 1's exports, but ONLY to fill gaps — a variable that
+  # phase 2 already has always wins. That single rule is what makes
+  # this safe: phase 2's own $out/$outputs, its NIX_BUILD_TOP, its
+  # PATH, and every stdenv-managed variable are set before this runs,
+  # so they cannot be clobbered by phase 1's (deliberately bogus,
+  # /nonexistent) values. What is left over is exactly the package's
+  # own bookkeeping, like buildRoot.
+  #
+  # The explicit skips are for variables phase 2 legitimately does NOT
+  # define but must not inherit either: PATH would drag nixgg's shims
+  # into a phase that is supposed to run real tools, and NIXGG_* would
+  # tell those shims they are still in a builder-rpc-v0 sandbox.
+  ggRestoreEnv = ''
+    if [ -f "$NIX_BUILD_TOP/.gg-env" ]; then
+      while IFS= read -r ggLine; do
+        case "$ggLine" in
+          "declare -x "*) ;;
+          *) continue ;;
+        esac
+        ggKV=''${ggLine#declare -x }
+        ggName=''${ggKV%%=*}
+        case "$ggName" in
+          PATH|PWD|OLDPWD|HOME|SHLVL|_) continue ;;
+          TMP|TMPDIR|TEMP|TEMPDIR) continue ;;
+          NIX_BUILD_TOP|NIX_STORE|NIX_BUILD_CORES|NIX_LOG_FD) continue ;;
+          out|outputs) continue ;;
+          NIXGG_*) continue ;;
+          # Phase control. Derivation attributes are exported like any
+          # other variable, so phase 1's own `dontInstall = true`
+          # arrives here as dontInstall=1 — and phase 2, which never
+          # sets it, would gap-fill it and then SKIP ITS OWN
+          # installPhase. That failure is silent: the builder exits 0
+          # having run nothing, and Nix reports only "failed to produce
+          # output path". Same hazard for dontFixup/doCheck/doDist and
+          # for the phase list itself.
+          dont*|do[A-Z]*|phases|*Phase|*Phases) continue ;;
+        esac
+        # Gap-fill only: never override what phase 2 already decided.
+        if [ -z "''${!ggName+x}" ]; then
+          eval "export $ggKV"
+        fi
+      done < "$NIX_BUILD_TOP/.gg-env"
+    fi
   '';
 in
 
@@ -321,6 +386,7 @@ stdenv0.override (
                 cp -a ${builtTree}/. "$NIX_BUILD_TOP/"
                 chmod -R u+w "$NIX_BUILD_TOP"
                 cd "$NIX_BUILD_TOP/$(cat "$NIX_BUILD_TOP/.gg-cwd")"
+                ${ggRestoreEnv}
                 export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                 runHook postGgRestore
               '';
