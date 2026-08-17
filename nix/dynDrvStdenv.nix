@@ -387,6 +387,35 @@ stdenv0.override (
                 chmod -R u+w "$NIX_BUILD_TOP"
                 cd "$NIX_BUILD_TOP/$(cat "$NIX_BUILD_TOP/.gg-cwd")"
                 ${ggRestoreEnv}
+
+                # Phase 2 needs the shims REACHABLE AND INERT.
+                #
+                # Reachable, because phase 1 hands shim paths to things
+                # that persist into phase 2: cmake bakes an absolute
+                # compiler path into its generated Makefile, and a
+                # caller can put one in makeFlags (the kernel does —
+                # `CC=<nixgg>/shims/gcc`, because nixpkgs passes
+                # absolute tool paths precisely to defeat PATH
+                # interposition). Those paths get invoked here whether
+                # or not we planned for it.
+                #
+                # Without the NIXGG_* env the shim cannot even build its
+                # config, so it exits non-zero before doing anything.
+                # kbuild reads that as a broken toolchain and stops with
+                # a message that names neither nixgg nor the real cause:
+                #
+                #   <nixgg>/shims/gcc: unknown C compiler
+                #   scripts/Kconfig.include:45: Sorry, this C compiler
+                #   is not supported.
+                #
+                # Inert, because there is nothing left to accelerate:
+                # every artifact phase 1 modelled is already built and
+                # restored. BYPASS makes each shim exec the real tool
+                # immediately, so phase 2 behaves exactly as if the
+                # shims were never involved.
+                export NIXGG_BYPASS=1
+                ${ggShimsOnPath knownStorePathsJSON}
+
                 export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                 runHook postGgRestore
               '';
