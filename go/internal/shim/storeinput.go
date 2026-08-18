@@ -9,6 +9,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/mode"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
@@ -328,4 +329,17 @@ func storeAddLooseFile(cfg *toolchain.Config, path string) (string, error) {
 		return "", err
 	}
 	return sandbox.StoreAddScan(cfg, base, tmp)
+}
+
+// carvedOut reports whether a subtree is excluded from modelling.
+//
+// A declared subtree means "nixgg models nothing here", so every shim
+// that produces an artifact has to honour it directly rather than
+// inherit it from its inputs. Inheriting only worked while unmodellable
+// inputs made the whole subtree bail together; once those are
+// store-added instead, a shim can model an artifact inside a subtree
+// whose siblings were passed through, and the two halves no longer
+// agree.
+func carvedOut(path string) bool {
+	return mode.For(path) == mode.Passthrough
 }

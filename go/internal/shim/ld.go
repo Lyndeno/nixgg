@@ -48,6 +48,11 @@ func LD(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return Passthrough(real, args)
 	}
 
+	if carvedOut(output) {
+		logf("ld passthrough: %s is in a carved-out subtree", output)
+		return Passthrough(real, args)
+	}
+
 	logf("ld -r %s <- %s", output, joinBase(inputs))
 
 	_, jsonInputs, err, ok := classifyInputs(cfg, inputs, altStorePrefix(cfg.Store), l, "ld",
