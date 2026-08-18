@@ -98,6 +98,15 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return err
 	}
 
+	// The dep-generation flags were stripped, so nothing else will write
+	// this file, and some build systems run a tool over it and hard-fail
+	// without it. scan already resolved the exact header set.
+	if dep := requestedDepFile(args); dep != "" {
+		if err := writeDepFile(dep, output, source, scanResult.Headers); err != nil {
+			return err
+		}
+	}
+
 	// 2. Stage source + headers into .nixgg/srcs/<tu-id>/.
 	srcAbs, err := filepath.Abs(source)
 	if err != nil {
@@ -615,4 +624,59 @@ func isHeaderLang(lang string) bool {
 		return true
 	}
 	return false
+}
+
+// requestedDepFile returns the dependency-file path the caller asked the
+// compiler to write, or "" if it asked for none.
+//
+// Two spellings reach us. `-MF <path>` is a separate argv token; kbuild
+// instead uses the preprocessor-passthrough form, where the filename is
+// a comma element: `-Wp,-MMD,./.main.o.d`.
+func requestedDepFile(args []string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "-MF" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if !strings.HasPrefix(a, "-Wp,") {
+			continue
+		}
+		parts := strings.Split(a[len("-Wp,"):], ",")
+		for j := 0; j < len(parts); j++ {
+			switch parts[j] {
+			case "-MMD", "-MD", "-MF":
+				if j+1 < len(parts) {
+					return parts[j+1]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// writeDepFile emits a make-format dependency fragment for one TU.
+//
+// Plain `target: prereq…`: consumers only parse the target and its
+// prerequisites. No -MP phony targets — they tolerate deleted headers,
+// and a stale entry costs at most one extra rebuild.
+func writeDepFile(path, output, source string, headers []scan.Header) error {
+	var b strings.Builder
+	b.WriteString(output)
+	b.WriteString(": ")
+	b.WriteString(source)
+	for _, h := range headers {
+		b.WriteString(" \\\n  ")
+		b.WriteString(h.Abs)
+	}
+	b.WriteString("\n")
+
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("depfile dir %s: %w", dir, err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		return fmt.Errorf("write depfile %s: %w", path, err)
+	}
+	return nil
 }
