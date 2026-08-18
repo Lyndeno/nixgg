@@ -29,6 +29,10 @@ const (
 	// compiling it. Reached only when the caller points the build's
 	// `objtool=` make variable at our shim.
 	ToolObjtool
+	// ToolObjcopy: a generic object rewrite
+	// (scripts/Makefile.lib cmd_objcopy), used for symbol prefixing
+	// and section stripping.
+	ToolObjcopy
 )
 
 // Basename returns the argv[0] name we advertise to the sandbox.
@@ -52,6 +56,8 @@ func (t Tool) Basename() string {
 		return "ld"
 	case ToolObjtool:
 		return "objtool"
+	case ToolObjcopy:
+		return "objcopy"
 	}
 	return ""
 }
@@ -115,6 +121,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolLD
 	case "objtool":
 		return ToolObjtool
+	case "objcopy":
+		return ToolObjcopy
 	}
 	return ToolUnknown
 }
