@@ -76,6 +76,16 @@ QUICK=(
   "mosh|bin/mosh-server|%s --version"
 )
 SLOW=(
+  # Not in QUICK because it needs the kernel's `dev` output — a ~3GB
+  # closure — which is a poor fit for a set advertised as "cheap by
+  # default, ~2 min".
+  #
+  # The version in this path tracks linuxPackages.kernel.modDirVersion
+  # from the flake pin, so a `nix flake update` that bumps the kernel
+  # needs this string bumped too. Kept explicit rather than globbed
+  # because the whole point of the `want` column is to pin the exact
+  # FHS location, and depmod cares that it is lib/modules/<ver>/.
+  "kmod|lib/modules/6.18.41/extra/hello_mod.ko|-"
   "redis|bin/redis-server|%s --version"
   "ffmpeg|bin/ffmpeg_g|%s -version"
   "llvm|bin/llc|%s --version"

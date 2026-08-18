@@ -796,6 +796,18 @@
                 batchGroups = [ { name = "gcc"; patterns = [ "libiberty/*.c" ]; } ];
               };
             };
+            # Out-of-tree kernel module — the cheap kbuild probe that
+            # stands in for the NixOS kernel. See its docstring for
+            # what it does and does not cover. Not in smoke.sh's QUICK
+            # set until it passes.
+            kmod = {
+              dir = ./examples/kmod;
+              args = {
+                inherit (pkgs) kmod stdenv;
+                kernel = pkgs.linuxPackages.kernel;
+                src = ./examples/kmod/mod;
+              };
+            };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the
             # phase-chaining pattern examples/llvm relies on.
