@@ -191,3 +191,60 @@ func TestNixggScratchDirIsExcluded(t *testing.T) {
 		t.Errorf("real build output was not staged: %v", err)
 	}
 }
+
+// A drvref stub's content is a /nix/store/….drv path, and
+// `nix store add --scan` records every store path it finds. Copying
+// stubs verbatim therefore makes the captured tree reference every
+// producing derivation — and a derivation's closure contains its own
+// inputs, so for a TU that is its staged source farm and every header in
+// it.
+//
+// At scale that is tens of thousands of stubs pulling in the whole
+// staging closure, which Nix bind-mounts into every derivation that
+// consumes the tree — enough to exceed the kernel mount limit and fail
+// as "No space left on device" on a disk that is nowhere near full.
+//
+// Walk runs before StageForScan and already holds every drv path, and
+// the assembly overlays the real artifact over each stub, so the staged
+// bytes are dead. Blank them.
+func TestStageForScanBlanksDrvrefStubs(t *testing.T) {
+	root := t.TempDir()
+	drvPath := "/nix/store/00000000000000000000000000000000-tu-x.o.drv"
+	stub := filepath.Join(root, "x.o")
+	if err := os.WriteFile(stub, []byte(drvref.Body(drvPath)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real.txt")
+	if err := os.WriteFile(real, []byte("genuine output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Walk must still see the stub: it runs first and is what the
+	// assembly is built from.
+	stubs, err := Walk(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stubs) != 1 || stubs[0].DrvPath != drvPath {
+		t.Fatalf("Walk lost the stub: %+v", stubs)
+	}
+
+	staged, err := StageForScan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(staged, "x.o"))
+	if err != nil {
+		t.Fatalf("staged stub missing entirely; the overlay needs the path to exist: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("staged stub still carries %d bytes (%q) — --scan will record "+
+			"a reference to the drv and drag in its whole input closure",
+			len(got), string(got))
+	}
+	// Real output must be untouched.
+	if b, err := os.ReadFile(filepath.Join(staged, "real.txt")); err != nil || string(b) != "genuine output" {
+		t.Errorf("real build output was altered: %q %v", string(b), err)
+	}
+}

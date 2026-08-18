@@ -165,6 +165,24 @@ func copyRecursive(src, dst string) error {
 			}
 		}
 		return nil
+	case drvref.Is(src):
+		// A drvref stub's whole content is a /nix/store/….drv path, and
+		// `nix store add --scan` records every store path it finds. So
+		// copying stubs verbatim makes the captured tree REFERENCE each
+		// producing derivation, and a derivation's closure includes its
+		// own inputs — for a compile, its whole staged source tree.
+		// Nix then bind-mounts that closure into every derivation that
+		// consumes the tree.
+		//
+		// Blanking them is safe because of ordering, not luck:
+		// cmdAssemble calls Walk on the ORIGINAL root and already holds
+		// every stub's drv path before StageForScan runs. The staged
+		// copy needs only the tree's SHAPE, and the assembly overlays
+		// the real artifact over each stub anyway.
+		//
+		// Keep an empty file rather than skipping: recipes stat their
+		// outputs, and the overlay's `cp -a` wants the path to exist.
+		return os.WriteFile(dst, nil, info.Mode().Perm())
 	default:
 		return copyFile(src, dst, info.Mode().Perm())
 	}
