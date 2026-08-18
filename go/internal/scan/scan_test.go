@@ -227,8 +227,20 @@ func TestStagedIFlags(t *testing.T) {
 		{
 			// Only reachable if projectRoot computation already went
 			// wrong; a visibly-broken flag beats a silently wrong one.
+			// The synthetic "-I." lands LAST here because the caller
+			// never named the root.
 			"dir outside root becomes ..-relative",
-			"/p/sub", []string{"/p/other"}, []string{"-I.", "-I../other"},
+			"/p/sub", []string{"/p/other"}, []string{"-I../other", "-I."},
+		},
+		{
+			// Include ORDER is semantics. kbuild passes the root LAST
+			// (-I../include ... -I../. -I.) so that include/net/nfc/nfc.h
+			// wins over net/nfc/nfc.h. Hoisting "-I." to the front
+			// inverted that and broke net/nfc/af_nfc.c 19,000 compiles
+			// into a kernel build.
+			"caller order is preserved, root stays last",
+			"/p", []string{"/p/include", "/p/net/nfc", "/p"},
+			[]string{"-Iinclude", "-Inet/nfc", "-I."},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

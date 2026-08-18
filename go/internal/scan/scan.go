@@ -322,10 +322,10 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 	}
 
 	return &Result{
-		Headers:      headers,
-		ProjectRoot:  projectRoot,
-		StagedIFlags: iflags,
-		StoreIFlags:  storeFlags,
+		Headers:            headers,
+		ProjectRoot:        projectRoot,
+		StagedIFlags:       iflags,
+		StoreIFlags:        storeFlags,
 		StagedIncludeFlags: includeFlags,
 	}, deps, nil
 }
@@ -347,12 +347,13 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 // before -isystem ones. Every TU reaching SmallVector-style code failed
 // with "'struct tm' has no member".
 //
-// "-I." is always first so the staged root is on the include path.
-// Results are deduped by rel path, so a caller's `-I.` (== cwd == root)
-// or a repeated dir does not emit twice.
+// -I order is semantics, not style: the first directory containing
+// the named file wins, so reordering changes which header a TU
+// compiles against. Emit the caller's dirs in their original order,
+// appending a synthetic -I. only if they never named the root.
 func stagedIFlags(projectRoot string, callerDirs []string) []string {
-	iflags := []string{"-I."}
-	seenRel := map[string]bool{".": true}
+	var iflags []string
+	seenRel := map[string]bool{}
 	for _, p := range callerDirs {
 		rel := "."
 		if p != projectRoot {
@@ -366,9 +367,13 @@ func stagedIFlags(projectRoot string, callerDirs []string) []string {
 			continue
 		}
 		seenRel[rel] = true
-		if rel != "." {
-			iflags = append(iflags, "-I"+rel)
-		}
+		iflags = append(iflags, "-I"+rel)
+	}
+	// The staged root has to be reachable even when the caller never
+	// named it — a bare `cc -c foo.c` relies on it. Last, so it cannot
+	// shadow a directory the caller did name.
+	if !seenRel["."] {
+		iflags = append(iflags, "-I.")
 	}
 	return iflags
 }
@@ -587,10 +592,10 @@ func isPrefixOfPath(root, path string) bool {
 // the fs walk. We use a compact newline-delimited format instead of
 // JSON to keep parse cost low.
 //
-//   line 0:   PROJECT_ROOT=<path>
-//   line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
-//   line ..:  STORE_IFLAG=<flag>   (repeated)
-//   line ..:  HEADER=<abs>\t<rel>  (repeated)
+//	line 0:   PROJECT_ROOT=<path>
+//	line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
+//	line ..:  STORE_IFLAG=<flag>   (repeated)
+//	line ..:  HEADER=<abs>\t<rel>  (repeated)
 func encodeResult(r *Result) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "PROJECT_ROOT=%s\n", r.ProjectRoot)
