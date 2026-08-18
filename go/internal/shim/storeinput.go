@@ -122,6 +122,30 @@ func classifyInputs(
 			jsonInputs = append(jsonInputs, expr.JSONDrvInput{
 				Kind: "drv", Ref: c.Ref, Name: name,
 			})
+		case classify.Regular:
+			// A real file nixgg did not produce — a project may compile
+			// some objects with a tool the shims do not cover.
+			//
+			// Bailing is not a local decision: an unmodellable input makes
+			// THIS archive passthrough, hence a plain file, which makes its
+			// parent unmodellable in turn, all the way up. So store the
+			// file and depend on its content instead.
+			//
+			// Sandbox mode only. Native mode has no cascade to break, and a
+			// store round-trip there would change drv content for builds
+			// that work today.
+			if !sandbox.Enabled() {
+				logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
+				return nil, nil, passthrough(), false
+			}
+			sp, err := storeAddLooseFile(cfg, in)
+			if err != nil {
+				logf("%s passthrough: store-add %s failed: %v", logPrefix, in, err)
+				return nil, nil, passthrough(), false
+			}
+			jsonInputs = append(jsonInputs, expr.JSONDrvInput{
+				Kind: "src", Ref: filepath.Base(sp), Name: filepath.Base(in),
+			})
 		default:
 			logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
 			return nil, nil, passthrough(), false
@@ -234,4 +258,31 @@ func multiTargetName(path string) string {
 		return ""
 	}
 	return os.Getenv("name") + "-" + strings.TrimSuffix(key, ".drv")
+}
+
+// storeAddLooseFile puts a single build-tree file into the store as a
+// DIRECTORY containing it.
+//
+// `nix store add <file>` would give a store path that IS the file, but
+// both serializers render an input's argv token as Ref+"/"+Name and
+// expect Ref to be a directory — the shape every drv output already
+// has. Staging into a one-file directory keeps that invariant instead
+// of special-casing the emitters, which are the byte-identity-critical
+// part of the codebase.
+func storeAddLooseFile(cfg *toolchain.Config, path string) (string, error) {
+	base := filepath.Base(path)
+	tmp, err := os.MkdirTemp(os.Getenv("NIX_BUILD_TOP"), "gg-loose-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp)
+
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, base), src, 0o444); err != nil {
+		return "", err
+	}
+	return sandbox.StoreAddScan(cfg, base, tmp)
 }
