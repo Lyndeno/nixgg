@@ -119,6 +119,9 @@
   #     { name = "vendor"; patterns = [ "deps/**/*.c" ]; }
   #   ];
   batchGroups ? [ ],
+  # Stage each TU as a farm of symlinks into per-file store objects.
+  # Sandbox mode only, off by default — see dynDrvStdenv.sharedStaging.
+  sharedStaging ? false,
 }:
 
 let
@@ -383,6 +386,10 @@ let
       # llvm). NIXGG_RPC=0 is the escape hatch back to the CLI
       # fallback if something unforeseen turns up.
       NIXGG_RPC            = "1";
+    }
+    // lib.optionalAttrs sharedStaging { NIXGG_SHARED_STAGE = "1"; }
+    // {
+
       # See scrubWrapperEnv above for what this does and why. Two points
       # specific to the sandbox side: the shims/ dir goes ahead of the
       # toolchain stdenv already put on PATH so cc/c++/ar dispatch through

@@ -76,6 +76,15 @@
   # IS reachable via a plain .overrideAttrs on the returned package, so
   # this exists mostly for symmetry.
   extraPhase2Attrs ? (finalAttrs: old: old),
+  # Stage each TU as a farm of symlinks into per-file store objects
+  # instead of copying its whole header closure. Sandbox mode only:
+  # it relies on `nix store add --scan` recording symlink targets as
+  # references, and native mode imports its staging dir as a plain path
+  # literal, which does no scanning — the targets would dangle.
+  #
+  # Off by default because that asymmetry suspends the native/sandbox
+  # drv-equivalence guarantee, which is the project's core invariant.
+  sharedStaging ? false,
 }:
 
 let
@@ -102,6 +111,7 @@ let
       coreutils
       gcc
       gnumake
+      sharedStaging
       system
       ;
   };
