@@ -383,6 +383,7 @@ type TransformJSONParams struct {
 	Bash        string
 	Coreutils   string
 	ToolBin     string // absolute /nix/store/… path of the rewriting binary
+	InPlace     bool   // true: tool rewrites its single operand (objtool)
 	Flags       []string
 	Input       JSONDrvInput
 	StoreDeps   []string
@@ -396,6 +397,7 @@ type TransformJSONParams struct {
 func TransformJSON(p TransformJSONParams) JSONDrv {
 	d := &Derivation{
 		Kind:       KindTransform,
+		ToolInPlace: p.InPlace,
 		Name:       p.Name,
 		System:     p.System,
 		Bash:       p.Bash,

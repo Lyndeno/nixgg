@@ -129,6 +129,12 @@ type Derivation struct {
 	// long").
 	InlineFilesStore string
 
+	// Transform-only: does the tool rewrite its operand in place
+	// (objtool: one operand) or read one file and write another
+	// (objcopy: `objcopy <flags> <in> <out>`)? In-place needs the input
+	// copied out of its read-only store path first; in/out does not.
+	ToolInPlace bool
+
 	// Transform-only: absolute /nix/store/… path of the binary that
 	// rewrites the object. Not taken from PATH like the compiler and
 	// `ar`, because this tool is built by the wrapped project itself
@@ -462,12 +468,22 @@ mkdir -p "%s"
 "%s" %s -o "%s" %s
 `, coreutils, d.outDir(), d.ToolBin, shellQuoteFlags(d.Flags), d.outPath(), inputs())
 	case KindTransform:
-		// Copy first, then rewrite the copy: these tools edit in place
-		// and the input is a read-only store path. chmod because store
-		// paths arrive without write permission.
-		//
 		// PATH carries coreutils only — no compiler is involved, and the
 		// transform binary is invoked by absolute path.
+		if !d.ToolInPlace {
+			// `tool <flags> <in> <out>` — objcopy's shape. Nothing to
+			// copy: the tool reads the store path and writes $out.
+			return fmt.Sprintf(
+				`set -euo pipefail
+export PATH="%s/bin"
+mkdir -p "%s"
+"%s" %s %s "%s"
+`, coreutils, d.outDir(), d.ToolBin, shellQuoteFlags(d.Flags),
+				inputs(), d.outPath())
+		}
+		// In-place tools (objtool) rewrite their operand, so the input
+		// has to be copied out of its read-only store path first. chmod
+		// because store paths arrive without write permission.
 		return fmt.Sprintf(
 			`set -euo pipefail
 export PATH="%s/bin"

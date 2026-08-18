@@ -32,6 +32,10 @@ const (
 	// modules with it (cmd_ld_multi_m) and runs it over single-object
 	// modules too (cmd_ld_single).
 	ToolLD
+	// ToolObjcopy: a generic object rewrite
+	// (scripts/Makefile.lib cmd_objcopy), used for symbol prefixing in
+	// symbol prefixing and section stripping.
+	ToolObjcopy
 )
 
 // Basename returns the argv[0] name we advertise to the sandbox.
@@ -55,6 +59,8 @@ func (t Tool) Basename() string {
 		return "objtool"
 	case ToolLD:
 		return "ld"
+	case ToolObjcopy:
+		return "objcopy"
 	}
 	return ""
 }
@@ -118,6 +124,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolObjtool
 	case "ld":
 		return ToolLD
+	case "objcopy":
+		return ToolObjcopy
 	}
 	return ToolUnknown
 }
