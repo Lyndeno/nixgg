@@ -88,6 +88,16 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 
 	logf("compile %s -> %s", source, output)
 
+	// A source that is not a regular file cannot be modelled: there are
+	// no bytes to content-address. In practice that means /dev/null,
+	// which is how build systems ask the compiler a question rather
+	// than requesting an artifact — the answer has to be the real
+	// compiler's verdict, so get out of the way.
+	if !isRegularFile(source) {
+		logf("  passthrough: %s is not a regular file (compiler probe)", source)
+		return Passthrough(realTool, args)
+	}
+
 	// Resolve the real cc for scan-headers to match the caller's tool
 	// role — same reason as the passthrough case above.
 	scannerCC := realTool
@@ -679,4 +689,14 @@ func writeDepFile(path, output, source string, headers []scan.Header) error {
 		return fmt.Errorf("write depfile %s: %w", path, err)
 	}
 	return nil
+}
+
+// isRegularFile reports whether path is a regular file. A symlink to a
+// regular file counts (Stat follows); a character device, fifo or
+// directory does not. Errors count as "not regular" so a source that
+// cannot be stat'd goes to the real compiler, which will produce the
+// caller's expected diagnostic rather than ours.
+func isRegularFile(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
 }
