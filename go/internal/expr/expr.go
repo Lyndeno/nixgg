@@ -410,6 +410,41 @@ func TransformJSON(p TransformJSONParams) JSONDrv {
 	return d.toJSON(p.ExtraSrcs, nil)
 }
 
+// PartialLinkJSONParams describes an `ld -r` step.
+type PartialLinkJSONParams struct {
+	Name        string
+	OutName     string
+	System      string
+	Bash        string
+	Coreutils   string
+	ToolBin     string // absolute /nix/store/… path of `ld`
+	Flags       []string
+	Inputs      []JSONDrvInput
+	StoreDeps   []string
+	Placeholder string
+	ExtraSrcs   []string
+	Env         map[string]string
+}
+
+// PartialLinkJSON produces a JSONDrv for `ld -r`: several objects in,
+// one object out. Sandbox mode only.
+func PartialLinkJSON(p PartialLinkJSONParams) JSONDrv {
+	d := &Derivation{
+		Kind:       KindPartialLink,
+		Name:       p.Name,
+		System:     p.System,
+		Bash:       p.Bash,
+		Coreutils:  p.Coreutils,
+		OutName:    p.OutName,
+		ToolBin:    p.ToolBin,
+		Flags:      p.Flags,
+		Inputs:     inputsFromJSON(p.Inputs),
+		StoreDeps:  p.StoreDeps,
+		WrapperEnv: p.Env,
+	}
+	return d.toJSON(p.ExtraSrcs, nil)
+}
+
 // LinkJSON produces a JSONDrv for a link step. Delegates to
 // Derivation for env/script shape.
 func LinkJSON(p LinkJSONParams) JSONDrv {
