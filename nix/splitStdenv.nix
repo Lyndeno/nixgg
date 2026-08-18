@@ -102,6 +102,11 @@
   # headers; with it, a fraction of that. Threaded into ggShimsOnPath's
   # NIXGG_SHARED_STAGE — see internal/stage's SourcesShared.
   sharedStaging ? false,
+  # Subtrees whose build reads object BYTES inline, which no derivation
+  # can model. The shims pass work under them straight through — see
+  # internal/mode. Threaded into ggShimsOnPath's
+  # NIXGG_PASSTHROUGH_PATHS.
+  passthroughPaths ? [ ],
 }:
 
 let
@@ -122,6 +127,7 @@ let
       coreutils
       gcc
       gnumake
+      passthroughPaths
       sharedStaging
       system
       ;
