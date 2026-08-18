@@ -106,6 +106,44 @@ let
       ;
   };
   inherit (shared) ggShimsOnPath submitBuildTreeScript outputPlaceholder;
+
+  # Replay phase 1's exports, gap-filling only: a variable
+  # phase 2 already set always wins, so its own outputs and
+  # stdenv-managed state cannot be clobbered. Splitting one
+  # mkDerivation across two derivations splits the shell too, and
+  # packages routinely export in one phase and read in a later one.
+  ggRestoreEnv = ''
+    if [ -f "$NIX_BUILD_TOP/.gg-env" ]; then
+      while IFS= read -r ggLine; do
+        case "$ggLine" in
+          "declare -x "*) ;;
+          *) continue ;;
+        esac
+        ggKV=''${ggLine#declare -x }
+        ggName=''${ggKV%%=*}
+        case "$ggName" in
+          PATH|PWD|OLDPWD|HOME|SHLVL|_) continue ;;
+          TMP|TMPDIR|TEMP|TEMPDIR) continue ;;
+          NIX_BUILD_TOP|NIX_STORE|NIX_BUILD_CORES|NIX_LOG_FD) continue ;;
+          out|outputs) continue ;;
+          NIXGG_*) continue ;;
+          # Phase control. Derivation attributes are exported like any
+          # other variable, so phase 1's own `dontInstall = true`
+          # arrives here as dontInstall=1 — and phase 2, which never
+          # sets it, would gap-fill it and then SKIP ITS OWN
+          # installPhase. That failure is silent: the builder exits 0
+          # having run nothing, and Nix reports only "failed to produce
+          # output path". Same hazard for dontFixup/doCheck/doDist and
+          # for the phase list itself.
+          dont*|do[A-Z]*|phases|*Phase|*Phases) continue ;;
+        esac
+        # Gap-fill only: never override what phase 2 already decided.
+        if [ -z "''${!ggName+x}" ]; then
+          eval "export $ggKV"
+        fi
+      done < "$NIX_BUILD_TOP/.gg-env"
+    fi
+  '';
 in
 
 stdenv0.override (
@@ -360,6 +398,7 @@ stdenv0.override (
                   cp -a ${builtTree}/. "$NIX_BUILD_TOP/"
                   chmod -R u+w "$NIX_BUILD_TOP"
                   cd "$NIX_BUILD_TOP/$(cat "$NIX_BUILD_TOP/.gg-cwd")"
+                  ${ggRestoreEnv}
                   export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                   # `export DESTDIR` alone is not enough: some packages'
                   # own Configure/Makefile (openssl's

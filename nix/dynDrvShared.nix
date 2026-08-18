@@ -61,12 +61,15 @@
 
   # Records $PWD's offset relative to $NIX_BUILD_TOP (phase 2 needs to
   # cd back there — cmake's `mkdir build && cd build` means $PWD here
-  # isn't $NIX_BUILD_TOP), then walks $NIX_BUILD_TOP for every drvref
-  # stub the shims left, builds one assembly drv that restores the tree
-  # and resolves each stub, and submits it as this derivation's "out".
+  # isn't $NIX_BUILD_TOP) and phase 1's exported environment (phase 2
+  # replays it gap-filling; see dynDrvStdenv's ggRestoreEnv), then
+  # walks $NIX_BUILD_TOP for every drvref stub the shims left, builds
+  # one assembly drv that restores the tree and resolves each stub, and
+  # submits it as this derivation's "out".
   # See go/internal/cli/assemble.go / go/internal/assemble/.
   submitBuildTreeScript = drvName: ''
     realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
+    export -p > "$NIX_BUILD_TOP/.gg-env"
     ${nixgg}/bin/nixgg assemble "$NIX_BUILD_TOP" "${drvName}"
   '';
 
