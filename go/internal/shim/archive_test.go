@@ -49,8 +49,11 @@ func TestParseARArgs(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name: "no inputs", args: []string{"rcs", "libfoo.a"},
-			wantOK: false,
+			// A CREATING op with no members is real and must be modelled:
+			// See TestParseARArgsEmptyCreatingArchive for why passing
+			// these through breaks every ancestor archive.
+			name: "creating op with no inputs", args: []string{"rcs", "libfoo.a"},
+			wantOK: true, wantMods: "rcs", wantArch: "libfoo.a", wantInputs: nil,
 		},
 		{
 			// A nested archive IS a legitimate member: build systems
@@ -190,5 +193,35 @@ func TestIsARModifiersAcceptsThin(t *testing.T) {
 	// Still reject things that are plainly not a modifier string.
 	if isARModifiers("all.a") {
 		t.Error("a filename was accepted as a modifier string")
+	}
+}
+
+// A creating invocation with no members is legitimate. Leaving those to
+// passthrough makes them plain files, which makes every ANCESTOR archive
+// unmodellable in turn.
+func TestParseARArgsEmptyCreatingArchive(t *testing.T) {
+	mods, archive, inputs, ok := parseARArgs([]string{"cDPrST", "drivers/cache/all.a"})
+	if !ok {
+		t.Fatal("empty creating archive rejected; this cascades to every parent")
+	}
+	if mods != "cDPrST" || archive != "drivers/cache/all.a" {
+		t.Errorf("mods/archive = %q/%q", mods, archive)
+	}
+	if len(inputs) != 0 {
+		t.Errorf("inputs = %q, want none", inputs)
+	}
+}
+
+// Read-only operations also have no members and must still bail —
+// the discriminator is the creating modifier, not the member count.
+func TestParseARArgsEmptyReadOpStillBails(t *testing.T) {
+	for _, args := range [][]string{
+		{"t", "aggregate.a"},
+		{"p", "libfoo.a"},
+		{"x", "libfoo.a"},
+	} {
+		if _, _, _, ok := parseARArgs(args); ok {
+			t.Errorf("read-only op %q was modelled", args)
+		}
 	}
 }

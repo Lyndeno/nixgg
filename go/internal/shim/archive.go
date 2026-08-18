@@ -141,7 +141,19 @@ func parseARArgs(args []string) (modifiers, archive string, inputs []string, ok 
 		}
 		inputs = append(inputs, in)
 	}
-	if archive == "" || len(inputs) == 0 {
+	// A creating invocation with NO members is legitimate — an aggregate
+	// archive for a directory that contributed none — and must be
+	// modelled. Passing it through makes it a plain file, which makes
+	// its parent unmodellable in turn, and the damage climbs the tree
+	// until a link meets a half-modelled archive.
+	//
+	// Read-only operations (`ar t archive.a`) also have no members, and
+	// those must still bail — hence keying on the creating modifiers
+	// rather than on the member count alone.
+	if archive == "" {
+		return "", "", nil, false
+	}
+	if len(inputs) == 0 && !strings.ContainsAny(modifiers, "crq") {
 		return "", "", nil, false
 	}
 	return modifiers, archive, inputs, true
