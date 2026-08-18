@@ -176,6 +176,18 @@ func parseARArgs(args []string) (modifiers, archive string, inputs []string, ok 
 	if !isARModifiers(modifiers) {
 		return
 	}
+	// `a`, `b`, `i` and `N` each take a positional argument that follows
+	// the modifier string (`ar rN <count> <archive> <member>...`), which
+	// shifts the archive name one slot right. Their semantics —
+	// insert-relative-to-member, use-instance-N — are member mutations
+	// this shim deliberately does not model.
+	//
+	// Bail explicitly: these were previously rejected only by accident,
+	// via the members-must-end-in-.o check that allowing `.a` members
+	// removes.
+	if strings.ContainsAny(modifiers, "abiN") {
+		return "", "", nil, false
+	}
 	archive = args[1]
 	for _, in := range args[2:] {
 		if !strings.HasSuffix(in, ".o") && !strings.HasSuffix(in, ".a") {
