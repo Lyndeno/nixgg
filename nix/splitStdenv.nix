@@ -363,7 +363,14 @@ stdenv0.override (
                     # (and any hook attached to it) entirely, so
                     # restoring the configure stage's tree needs its own
                     # always-run phase name instead.
-                    phases = "unpackPhase patchPhase ggRestorePhase buildPhase";
+                    # ggSubmitPhase is named explicitly here because
+                    # setup.sh only splices postPhases when `phases` is
+                    # UNSET. The configureStage == null path below leaves
+                    # it unset and gets the submit via postPhases; this
+                    # branch would silently drop it, and a build that
+                    # submits nothing fails with Nix's opaque "failed to
+                    # submit output path for 'out'".
+                    phases = "unpackPhase patchPhase ggRestorePhase buildPhase ggSubmitPhase";
                     ggRestorePhase = configureStage.restorePhase;
                   }
                   # Extra outputs (bin/dev/man/...) are plain env vars
@@ -405,7 +412,15 @@ stdenv0.override (
                     preBuild = ''
                       unset NIXGG_BYPASS
                     '' + (orig.preBuild or "");
-                    postBuild = (orig.postBuild or "") + submitBuildTreeScript outerName;
+                    # A real phase, not a postBuild hook: postBuild only
+                    # runs if the package's buildPhase calls runHook, and
+                    # many hand-written ones do not (nixpkgs' own
+                    # linux-config among them) — those built fine,
+                    # submitted nothing, and failed with Nix's opaque
+                    # "failed to submit output path for 'out'".
+                    # postPhases is spliced on unconditionally by setup.sh.
+                    postPhases = (lib.toList (orig.postPhases or [ ])) ++ [ "ggSubmitPhase" ];
+                    ggSubmitPhase = submitBuildTreeScript outerName;
                   }
                   // nonexistentOut;
               in
