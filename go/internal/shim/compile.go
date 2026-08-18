@@ -488,11 +488,21 @@ func parseCompileArgs(args []string) (source, output, depfile string, flags []st
 			// `-Wp,-MMD,path/to/foo.d` or `-Wp,-MMD,path,-MP` — Kbuild's
 			// own c_flags (scripts/Makefile.lib) always uses this
 			// instead of separate -MD/-MF tokens.
+			//
+			// The depfile path is captured so the shim can still write
+			// the .d the caller expects, then the dependency parts are
+			// stripped: they name a path relative to make's cwd, and the
+			// derivation's cwd is a read-only store path. Anything ELSE
+			// in the same -Wp, group is a real preprocessor flag and has
+			// to survive, which is why this strips rather than drops the
+			// whole argument. scan.StripWpDep is shared with the scanner
+			// so both agree on what counts as dependency plumbing.
 			if p := depfileFromWp(a); p != "" {
 				depfile = p
 			}
-			// Not appended to flags: these target the caller's own
-			// cpp/depfile bookkeeping, meaningless inside the sandbox.
+			if kept, ok := scan.StripWpDep(a); ok {
+				flags = append(flags, kept)
+			}
 		case a == "-x" || a == "-Xlinker" || a == "-Xassembler":
 			// Two-arg forms with values that aren't sources; keep both.
 			if i+1 >= len(args) {
