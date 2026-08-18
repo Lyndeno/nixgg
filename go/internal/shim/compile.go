@@ -9,8 +9,10 @@
 package shim
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +97,16 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	// compiler's verdict, so get out of the way.
 	if !isRegularFile(source) {
 		logf("  passthrough: %s is not a regular file (compiler probe)", source)
+		return Passthrough(realTool, args)
+	}
+
+	// `.incbin` embeds a file's bytes at ASSEMBLY time, naming it in a
+	// string the preprocessor never looks at, so `gcc -M` cannot report
+	// it. The file is absent from the staged tree and the TU dies in the
+	// assembler. The named file is usually generated, so it is not a
+	// static dependency the scanner could learn either.
+	if usesIncbin(source) {
+		logf("  passthrough: %s uses .incbin (assembler-time file dependency)", source)
 		return Passthrough(realTool, args)
 	}
 
@@ -699,4 +711,32 @@ func writeDepFile(path, output, source string, headers []scan.Header) error {
 func isRegularFile(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Mode().IsRegular()
+}
+
+// maxIncbinScan caps how much of a source we read looking for .incbin.
+// Real sources are far smaller; the cap only guards against a generated
+// multi-megabyte file making every compile pay to read it.
+const maxIncbinScan = 4 << 20
+
+// usesIncbin reports whether a source contains an .incbin directive.
+//
+// Deliberately a substring search rather than a parse. The directive
+// appears inside a C string literal in inline asm, inside .S files, and
+// behind #ifdefs, so anything short of running the preprocessor and
+// assembler would still be an approximation — and the cost of guessing
+// wrong is asymmetric. A false positive costs one un-accelerated
+// compile; a false negative is a build failure in the assembler, far
+// from the cause.
+func usesIncbin(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, maxIncbinScan)
+	n, err := io.ReadFull(f, buf)
+	if n == 0 && err != nil {
+		return false
+	}
+	return bytes.Contains(buf[:n], []byte(".incbin"))
 }
