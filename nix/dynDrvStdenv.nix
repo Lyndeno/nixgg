@@ -85,6 +85,14 @@
   # Off by default because that asymmetry suspends the native/sandbox
   # drv-equivalence guarantee, which is the project's core invariant.
   sharedStaging ? false,
+
+  # Subtrees whose build reads object BYTES inline, or expects a compile
+  # to FAIL and reads the diagnostic. A derivation cannot stand in for
+  # either, so the shims pass them through and let the build do the work.
+  #
+  # Project-specific by nature, which is why it is a parameter rather
+  # than a list compiled into internal/mode.
+  passthroughPaths ? [ ],
 }:
 
 let
@@ -111,6 +119,7 @@ let
       coreutils
       gcc
       gnumake
+      passthroughPaths
       sharedStaging
       system
       ;

@@ -110,6 +110,16 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return Passthrough(realTool, args)
 	}
 
+	// Subtrees the caller declared as passthrough: their build reads
+	// object BYTES inline, or expects a compile to FAIL and reads the
+	// diagnostic, so a derivation cannot stand in for either. Checked
+	// before the scan so we don't pay for header discovery we are about
+	// to throw away.
+	if mode.For(source) == mode.Passthrough {
+		logf("  passthrough: caller declared this subtree")
+		return Passthrough(realTool, args)
+	}
+
 	// Resolve the real cc for scan-headers to match the caller's tool
 	// role — same reason as the passthrough case above.
 	scannerCC := realTool

@@ -7,9 +7,10 @@
 #
 # Every binding here closes over the params both callers already share
 # (lib, nixgg, patchedNix, bash, coreutils, gcc, gnumake, system) plus
-# the optional sharedStaging flag — dynDrvConfigureCacheStdenv.nix's
-# extra params (stdenvNoCC, config, nixpkgsPath) are NOT needed by any
-# of these five, which is what makes lifting them out safe.
+# two optional flags (passthroughPaths, sharedStaging) that only
+# dynDrvStdenv passes — dynDrvConfigureCacheStdenv.nix's extra params
+# (stdenvNoCC, config, nixpkgsPath) are NOT needed by any of these
+# five, which is what makes lifting them out safe.
 {
   lib,
   patchedNix,
@@ -18,6 +19,11 @@
   coreutils,
   gcc,
   gnumake,
+  # Subtrees the caller has declared unmodellable; the shims pass work
+  # under them straight through (internal/mode). Empty by default so
+  # dynDrvConfigureCacheStdenv, which does not pass it, emits exactly
+  # the environment it did before this parameter existed.
+  passthroughPaths ? [ ],
   # Stage each TU as a symlink farm into per-file store objects rather
   # than copying (internal/stage's SourcesShared). Off by default so
   # dynDrvConfigureCacheStdenv, which does not pass it, emits exactly
@@ -55,6 +61,7 @@
     export NIXGG_SYSTEM="${system}"
     export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
     ${lib.optionalString sharedStaging "export NIXGG_SHARED_STAGE=1"}
+    export NIXGG_PASSTHROUGH_PATHS=${lib.escapeShellArg (builtins.toJSON passthroughPaths)}
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
     # Raw worker-protocol client for the sandbox's own daemon socket
     # (internal/rpc) instead of per-call fork+exec — see

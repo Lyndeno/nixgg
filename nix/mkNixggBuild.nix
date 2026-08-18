@@ -122,6 +122,10 @@
   # Stage each TU as a farm of symlinks into per-file store objects.
   # Sandbox mode only, off by default — see dynDrvStdenv.sharedStaging.
   sharedStaging ? false,
+
+  # Subtrees whose build reads object bytes inline, or expects a compile
+  # to fail — see dynDrvStdenv.passthroughPaths. Empty for most projects.
+  passthroughPaths ? [ ],
 }:
 
 let
@@ -388,6 +392,7 @@ let
       NIXGG_RPC            = "1";
     }
     // lib.optionalAttrs sharedStaging { NIXGG_SHARED_STAGE = "1"; }
+    // { NIXGG_PASSTHROUGH_PATHS = builtins.toJSON passthroughPaths; }
     // {
 
       # See scrubWrapperEnv above for what this does and why. Two points
