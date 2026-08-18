@@ -82,3 +82,22 @@ func TestConventionRulesSurviveWithoutConfiguration(t *testing.T) {
 		}
 	}
 }
+
+// A declared subtree is about where the OBJECT lands, not where its
+// source lives: a build may compile a source from elsewhere into it.
+// Keying on the source alone lets those objects through as stubs, and
+// whatever the subtree does with their bytes then fails.
+func TestPassthroughKeysOnOutputNotJustSource(t *testing.T) {
+	SetPassthroughPaths([]string{"src/embed/"})
+	defer SetPassthroughPaths([]string{"tools/gen/"})
+
+	// An ordinary source outside the subtree: accelerate it.
+	if got := For("../lib/cmdline.c"); got != Placeholder {
+		t.Errorf("For(lib/cmdline.c) = %v, want Placeholder", got)
+	}
+	// The object landing inside it must not be modelled. The compile
+	// shim checks both, so this is the half that matters.
+	if got := For("src/embed/lib-cmdline.o"); got != Passthrough {
+		t.Errorf("For(src/embed/lib-cmdline.o) = %v, want Passthrough", got)
+	}
+}

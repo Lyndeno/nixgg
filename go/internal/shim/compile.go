@@ -115,7 +115,10 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	// diagnostic, so a derivation cannot stand in for either. Checked
 	// before the scan so we don't pay for header discovery we are about
 	// to throw away.
-	if mode.For(source) == mode.Passthrough {
+	// Keyed on the OUTPUT as well as the source: a declared subtree is
+	// about where the object LANDS, and a build may compile a source
+	// from elsewhere into it.
+	if mode.For(source) == mode.Passthrough || mode.For(output) == mode.Passthrough {
 		logf("  passthrough: caller declared this subtree")
 		return Passthrough(realTool, args)
 	}
