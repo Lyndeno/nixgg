@@ -279,7 +279,11 @@
               # triples and versions is unbounded. These cover what the
               # examples and common autotools/cmake probes actually
               # invoke; add more if a real project needs them.
-              for t in ar c++ cc g++ gcc ranlib clang clang++ ld ld.bfd ld.gold ld.lld; do
+              # objtool is not a compiler: it is a per-object
+              # rewriter, reached only when a caller points the build's
+              # `objtool=` make variable here (nothing resolves it via
+              # PATH). Linked anyway so that pointing at it works.
+              for t in ar c++ cc g++ gcc ranlib clang clang++ ld ld.bfd ld.gold ld.lld objtool; do
                 ln -s ../bin/nixgg $out/shims/$t
               done
               for t in gcc g++ cc c++ ar ranlib ld; do
