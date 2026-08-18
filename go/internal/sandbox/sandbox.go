@@ -189,6 +189,11 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
 // instead — see DerivationAdd's own docstring for why.
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
+	// Sanitized once, before a backend is chosen: every path below —
+	// helper, direct RPC, and the CLI fallback — hands this name to the
+	// daemon, and Nix's naming rules apply identically to each. Doing it
+	// per-backend would let a new one be added without it.
+	name = StoreName(name)
 	if b, closeB, ok, err := selectBackend(); err != nil {
 		return "", fmt.Errorf("rpc store add --scan: %w", err)
 	} else if ok {
