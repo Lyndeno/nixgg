@@ -24,6 +24,10 @@ const (
 	ToolGXX
 	ToolAR
 	ToolRanlib
+	// ToolObjtool: a tool that rewrites an object in place after
+	// compiling it. Reached only when the caller points the build's
+	// `objtool=` make variable at our shim.
+	ToolObjtool
 )
 
 // Basename returns the argv[0] name we advertise to the sandbox.
@@ -43,6 +47,8 @@ func (t Tool) Basename() string {
 		return "ar"
 	case ToolRanlib:
 		return "ranlib"
+	case ToolObjtool:
+		return "objtool"
 	}
 	return ""
 }
@@ -102,6 +108,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolAR
 	case "ranlib":
 		return ToolRanlib
+	case "objtool":
+		return ToolObjtool
 	}
 	return ToolUnknown
 }

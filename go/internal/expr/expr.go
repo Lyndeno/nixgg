@@ -375,6 +375,41 @@ func ArchiveJSON(p ArchiveJSONParams) JSONDrv {
 	return d.toJSON(p.ExtraSrcs, nil)
 }
 
+// TransformJSONParams describes an in-place rewrite of one object.
+type TransformJSONParams struct {
+	Name        string
+	OutName     string
+	System      string
+	Bash        string
+	Coreutils   string
+	ToolBin     string // absolute /nix/store/… path of the rewriting binary
+	Flags       []string
+	Input       JSONDrvInput
+	StoreDeps   []string
+	Placeholder string
+	ExtraSrcs   []string
+	Env         map[string]string
+}
+
+// TransformJSON produces a JSONDrv for a KindTransform step: consume
+// one object, emit the same object rewritten. Sandbox mode only.
+func TransformJSON(p TransformJSONParams) JSONDrv {
+	d := &Derivation{
+		Kind:       KindTransform,
+		Name:       p.Name,
+		System:     p.System,
+		Bash:       p.Bash,
+		Coreutils:  p.Coreutils,
+		OutName:    p.OutName,
+		ToolBin:    p.ToolBin,
+		Flags:      p.Flags,
+		Inputs:     inputsFromJSON([]JSONDrvInput{p.Input}),
+		StoreDeps:  p.StoreDeps,
+		WrapperEnv: p.Env,
+	}
+	return d.toJSON(p.ExtraSrcs, nil)
+}
+
 // LinkJSON produces a JSONDrv for a link step. Delegates to
 // Derivation for env/script shape.
 func LinkJSON(p LinkJSONParams) JSONDrv {
