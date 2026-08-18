@@ -22,8 +22,8 @@ func Passthrough(realTool string, args []string) error {
 // probe phase, which compile+exec tiny binaries synchronously.
 // Users flip it around those phases:
 //
-//   NIXGG_BYPASS=1 ./configure
-//   make      # NIXGG_BYPASS unset → shims fire as normal
+//	NIXGG_BYPASS=1 ./configure
+//	make      # NIXGG_BYPASS unset → shims fire as normal
 //
 // Any non-empty, non-"0" value is truthy.
 func bypassed() bool {
