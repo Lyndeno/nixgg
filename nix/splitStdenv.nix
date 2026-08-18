@@ -97,6 +97,11 @@
   # filtering — always safe). Same shape as the old configureCacheStdenv
   # param — see nix/configureSrcFilter.nix.
   configureSrcFilter ? null,
+  # Stage each TU as a symlink farm into per-file store objects rather
+  # than copying. Without it a kernel stages ~150 GB of duplicated
+  # headers; with it, a fraction of that. Threaded into ggShimsOnPath's
+  # NIXGG_SHARED_STAGE — see internal/stage's SourcesShared.
+  sharedStaging ? false,
 }:
 
 let
@@ -117,6 +122,7 @@ let
       coreutils
       gcc
       gnumake
+      sharedStaging
       system
       ;
   };

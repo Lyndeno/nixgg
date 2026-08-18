@@ -10,7 +10,8 @@
 #
 # Every binding here closes over exactly the params splitStdenv.nix's
 # build stage needs (lib, nixgg, patchedNix, bash, coreutils, gcc,
-# gnumake, system) — its configure-only stage needs none of these.
+# gnumake, system), plus the optional sharedStaging flag — its
+# configure-only stage needs none of these.
 {
   lib,
   patchedNix,
@@ -19,6 +20,11 @@
   coreutils,
   gcc,
   gnumake,
+  # Stage each TU as a symlink farm into per-file store objects rather
+  # than copying (internal/stage's SourcesShared). Off by default so
+  # dynDrvConfigureCacheStdenv, which does not pass it, emits exactly
+  # the environment it did before this parameter existed.
+  sharedStaging ? false,
   system,
 }:
 
@@ -50,6 +56,7 @@
     export NIXGG_STORE="auto"
     export NIXGG_SYSTEM="${system}"
     export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
+    ${lib.optionalString sharedStaging "export NIXGG_SHARED_STAGE=1"}
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
     # Raw worker-protocol client for the sandbox's own daemon socket
     # (internal/rpc) instead of per-call fork+exec — see
@@ -67,6 +74,14 @@
   # walks $NIX_BUILD_TOP for every drvref stub the shims left, builds
   # one assembly drv that restores the tree and resolves each stub, and
   # submits it as this derivation's "out".
+  #
+  # The environment dump earns its keep because splitting one
+  # mkDerivation across two derivations splits the SHELL too, and
+  # packages routinely export a variable in one phase and read it in a
+  # later one: linux-config's configurePhase does `export
+  # buildRoot=...` and its installPhase is `mv $buildRoot/.config
+  # $out`, which in phase 2 became `mv /.config` — "cannot stat
+  # '/.config'".
   # See go/internal/cli/assemble.go / go/internal/assemble/.
   submitBuildTreeScript = drvName: ''
     realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
