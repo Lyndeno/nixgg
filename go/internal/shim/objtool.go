@@ -145,13 +145,24 @@ func storeAddTool(cfg *toolchain.Config, name, path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cacheDir := os.Getenv("NIX_BUILD_TOP")
+	// Under .nixgg/ so `nixgg assemble` never captures it — see
+	// scratch.go. Only a handful of files today, but the content of each
+	// is a store path, so at the build root they land in the captured
+	// tree's closure like any other memo cache.
 	cache := ""
-	if cacheDir != "" {
-		// Key on the tool's own path: a build may store-add more than
-		// one (objtool today, `ld` for single-object modules next).
-		cache = filepath.Join(cacheDir,
-			fmt.Sprintf(".gg-tool-%s-%x", name, sha256.Sum256([]byte(abs))))
+	if dir, err := scratchDir("tools"); err == nil {
+		// Key on the tool's path AND its mtime+size, matching
+		// storeShared. Path alone is not enough: kbuild rebuilds its own
+		// objtool in place when the config or scripts/ change, and a
+		// path-only key would keep handing derivations the store object
+		// made from the previous binary — objects rewritten by a stale
+		// tool, with no error anywhere.
+		key := abs
+		if st, err := os.Stat(abs); err == nil {
+			key = fmt.Sprintf("%s|%d|%d", abs, st.ModTime().UnixNano(), st.Size())
+		}
+		cache = filepath.Join(dir,
+			fmt.Sprintf("%s-%x", name, sha256.Sum256([]byte(key))))
 		if b, err := os.ReadFile(cache); err == nil {
 			if sp := strings.TrimSpace(string(b)); sp != "" {
 				return sp, nil
@@ -163,8 +174,21 @@ func storeAddTool(cfg *toolchain.Config, name, path string) (string, error) {
 		return "", fmt.Errorf("store-add %s: %w", name, err)
 	}
 	if cache != "" {
-		// Best-effort: a failed write costs a re-add, not correctness.
-		_ = os.WriteFile(cache, []byte(sp), 0o644)
+		// Write to a unique temp and rename. Shims run concurrently
+		// under `make -j` and every object asks for the same key, so a
+		// plain WriteFile lets a reader see a half-written file: the
+		// truncated store path survives TrimSpace and would be used as
+		// ToolBin. Best-effort otherwise — a failed write costs a
+		// re-add, not correctness.
+		if tmp, err := os.CreateTemp(filepath.Dir(cache), ".tool-*"); err == nil {
+			_, werr := tmp.WriteString(sp)
+			cerr := tmp.Close()
+			if werr == nil && cerr == nil {
+				_ = os.Rename(tmp.Name(), cache) // atomic; losing a race is harmless
+			} else {
+				_ = os.Remove(tmp.Name())
+			}
+		}
 	}
 	return sp, nil
 }
