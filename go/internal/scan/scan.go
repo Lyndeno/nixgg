@@ -433,20 +433,64 @@ func extractForceIncludes(flags []string) []string {
 	return out
 }
 
-func stripDepFlags(flags []string) []string {
-	var out []string
-	oneArg := map[string]bool{"-M": true, "-MM": true, "-MG": true, "-MP": true, "-MD": true, "-MMD": true}
-	twoArg := map[string]bool{"-MF": true, "-MT": true, "-MQ": true}
-	for i := 0; i < len(flags); i++ {
-		f := flags[i]
-		if oneArg[f] {
+var depOneArg = map[string]bool{"-M": true, "-MM": true, "-MG": true, "-MP": true, "-MD": true, "-MMD": true}
+var depTwoArg = map[string]bool{"-MF": true, "-MT": true, "-MQ": true}
+
+// StripWpDep removes dependency-generation directives from a `-Wp,…`
+// preprocessor-passthrough flag, returning the remainder and whether
+// anything survived.
+//
+// A `-Wp,-MMD,<file>` redirects dependency output to that file, which
+// silences the scanner's own `-M -MG -MF -`. It is equally invalid
+// inside the derivation, for the reason parseCompileArgs documents for
+// the bare -MD/-MMD forms.
+//
+// Shared with the compile shim so the two cannot disagree about which
+// flags are dependency plumbing.
+func StripWpDep(f string) (string, bool) {
+	const pfx = "-Wp,"
+	if !strings.HasPrefix(f, pfx) {
+		return f, true
+	}
+	// Inside -Wp, the filename is a comma element rather than a separate
+	// argv token, so -MD/-MMD take a value here even though their bare
+	// argv spellings do not. Check the takes-a-value set first.
+	wpTwoArg := map[string]bool{"-MMD": true, "-MD": true, "-MF": true, "-MT": true, "-MQ": true}
+	wpOneArg := map[string]bool{"-M": true, "-MM": true, "-MG": true, "-MP": true}
+
+	parts := strings.Split(f[len(pfx):], ",")
+	var kept []string
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if wpTwoArg[p] {
+			i++ // the filename rides along as the next comma element
 			continue
 		}
-		if twoArg[f] {
+		if wpOneArg[p] {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if len(kept) == 0 {
+		return "", false
+	}
+	return pfx + strings.Join(kept, ","), true
+}
+
+func stripDepFlags(flags []string) []string {
+	var out []string
+	for i := 0; i < len(flags); i++ {
+		f := flags[i]
+		if depOneArg[f] {
+			continue
+		}
+		if depTwoArg[f] {
 			i++ // skip the value too
 			continue
 		}
-		out = append(out, f)
+		if kept, ok := StripWpDep(f); ok {
+			out = append(out, kept)
+		}
 	}
 	return out
 }
