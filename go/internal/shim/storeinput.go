@@ -86,13 +86,28 @@ func classifyInputs(
 ) (linkInputs []expr.Input, jsonInputs []expr.JSONDrvInput, err error, ok bool) {
 	linkInputs = make([]expr.Input, 0, len(inputs))
 	jsonInputs = make([]expr.JSONDrvInput, 0, len(inputs))
-	for _, in := range inputs {
+
+	// A worklist rather than a range, because expanding a thin archive
+	// appends its members back onto the list and those can themselves be
+	// thin archives (build systems nest them several deep).
+	//
+	// `expanded` guards ONLY the members we synthesise, so a nested
+	// archive reached twice, or a cycle, cannot loop. It deliberately
+	// does not cover the caller's own inputs: link order is significant
+	// and repeats are meaningful there.
+	pending := append([]string(nil), inputs...)
+	expanded := make(map[string]bool)
+	for len(pending) > 0 {
+		in := pending[0]
+		pending = pending[1:]
+
 		if batchpending.Is(in) {
 			if err := ResolvePendingMember(cfg, l, in); err != nil {
 				logf("%s passthrough: resolving deferred batch member %s: %v", logPrefix, in, err)
 				return nil, nil, passthrough(), false
 			}
 		}
+
 		c := classify.Target(in, altPrefix, l)
 		switch c.Kind {
 		case classify.Store:
@@ -137,6 +152,34 @@ func classifyInputs(
 			if !sandbox.Enabled() {
 				logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
 				return nil, nil, passthrough(), false
+			}
+			// A thin archive is a list of PATHS, not bytes, so storing
+			// the file alone loses everything it points at — see
+			// thinar.go. Expand it and depend on the members instead.
+			if members, isThin, parsed := thinArchiveMembers(in); isThin {
+				if !parsed {
+					// Thin, but the member table would not parse. Storing
+					// it is the one thing we must not do: it holds paths,
+					// not bytes, so its members would vanish silently and
+					// surface as undefined references at the final link.
+					logf("%s passthrough: unparseable thin archive %s", logPrefix, in)
+					return nil, nil, passthrough(), false
+				}
+				logf("  %s: expanding thin archive %s (%d members)", logPrefix, in, len(members))
+				// Only expanded members are deduped, and only against
+				// other expanded members: a nested archive can be
+				// reached twice (a diamond) or cycle. The caller's own
+				// input list must keep every occurrence — `-lfoo … -lfoo`
+				// is the standard circular-archive idiom and dropping the
+				// repeat loses symbol resolution.
+				for _, m := range members {
+					if expanded[m] {
+						continue
+					}
+					expanded[m] = true
+					pending = append(pending, m)
+				}
+				continue
 			}
 			sp, err := storeAddLooseFile(cfg, in)
 			if err != nil {
