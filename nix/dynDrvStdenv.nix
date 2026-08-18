@@ -144,6 +144,21 @@ stdenv0.override (
           drvName = if probeArgs ? name then probeArgs.name else "${probeArgs.pname}-${probeArgs.version}";
           outerName = "gg-build-${drvName}";
 
+          # Honour what the package asked for: phases written against
+          # structuredAttrs use bash array syntax, which does not exist
+          # when it is off. Default matches make-derivation.nix.
+          structuredAttrs = probeArgs.__structuredAttrs or (config.structuredAttrsByDefault or false);
+
+          # builder-rpc-v0 wants $out unset; /nonexistent keeps stdenv's
+          # _assignFirst happy while making a real write fail loudly.
+          # Under structuredAttrs only `env` reaches the derivation as
+          # environment variables, so the placeholder goes there.
+          nonexistentOut =
+            if structuredAttrs then
+              { env = (probeArgs.env or { }) // { out = "/nonexistent"; }; }
+            else
+              { out = "/nonexistent"; };
+
           # Store paths the shim's storedeps matcher needs to recognize
           # in -I/-L flags — same computation as mkNixggBuild.nix's
           # knownStorePathInputs, sourced from the wrapped package's own
@@ -221,7 +236,6 @@ stdenv0.override (
                   # for that suffix). Phase 2 keeps the package's real
                   # `outputs`.
                   outputs = [ "out" ];
-                  out = "/nonexistent";
                   # Same reason as `outputs` above: make-derivation.nix
                   # computes `outputs' = outputs ++ optional
                   # separateDebugInfo' "debug"` at its OWN layer,
@@ -254,11 +268,11 @@ stdenv0.override (
                   }) extraOutputs
                 )
                 // {
-                  # Forced off regardless of what the package requests:
-                  # under __structuredAttrs, make-derivation.nix only
-                  # honors env-nested attrs, not bare top-level ones like
-                  # `out` above.
-                  __structuredAttrs = false;
+                  # Honoured, not forced: the package's phases may be
+                  # written against structuredAttrs. The `out`
+                  # placeholder moves into `env` to match — see
+                  # nonexistentOut.
+                  __structuredAttrs = structuredAttrs;
                   requiredSystemFeatures = (orig.requiredSystemFeatures or [ ]) ++ [ "builder-rpc-v0" ];
                   __contentAddressed = true;
                   outputHashMode = "text";
@@ -286,7 +300,8 @@ stdenv0.override (
                   '' + (orig.preBuild or "");
 
                   postBuild = (orig.postBuild or "") + submitBuildTreeScript outerName;
-                };
+                }
+                // nonexistentOut;
             in
             # extraPhase1Attrs runs last, over dynDrvStdenv's own base
             # attrs — see its docstring for why this is the only way to
@@ -331,7 +346,7 @@ stdenv0.override (
               // {
                 phases = "ggRestorePhase checkPhase installPhase fixupPhase installCheckPhase distPhase";
                 dontUnpack = true;
-                __structuredAttrs = false;
+                __structuredAttrs = structuredAttrs;
                 ggRestorePhase = ''
                   runHook preGgRestore
                   cp -a ${builtTree}/. "$NIX_BUILD_TOP/"
@@ -358,7 +373,18 @@ stdenv0.override (
                   # directly: openssl's own `make install_sw` wrote
                   # straight to its literal `/nonexistent` prefix,
                   # never under $DESTDIR, until this was added.
-                  installFlags="''${installFlags-} DESTDIR=$DESTDIR"
+                  # installFlagsArray, not installFlags: under
+                  # __structuredAttrs `installFlags` is a bash ARRAY, and
+                  # assigning a scalar to an array name writes element 0
+                  # — which silently welded this onto the package's first
+                  # real flag. nixpkgs' kernel sets
+                  # INSTALL_PATH=$out there, so `make install` received
+                  # one token "INSTALL_PATH=… DESTDIR=…" and died on
+                  # `cp: target 'DESTDIR=…': No such file or directory`.
+                  # setup.sh concatenates installFlagsArray in both
+                  # modes (concatTo, installPhase), and it is always a
+                  # plain array, so appending there is mode-independent.
+                  installFlagsArray+=( "DESTDIR=$DESTDIR" )
                   runHook postGgRestore
                 '';
                 installFlags = (orig.installFlags or "");
