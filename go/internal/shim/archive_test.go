@@ -2,6 +2,7 @@ package shim
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -52,10 +53,17 @@ func TestParseARArgs(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			// A non-.o member (another archive, a .lo, a response file)
-			// means we can't model the member list; bail entirely rather
-			// than silently dropping it.
-			name: "non-.o input bails", args: []string{"rcs", "libfoo.a", "a.o", "sub.a"},
+			// A nested archive IS a legitimate member: build systems
+			// list a subdirectory's archive
+			// alongside its own objects.
+			name: "nested .a member is modelled", args: []string{"rcs", "libfoo.a", "a.o", "sub.a"},
+			wantOK: true, wantMods: "rcs", wantArch: "libfoo.a",
+			wantInputs: []string{"a.o", "sub.a"},
+		},
+		{
+			// Anything we still cannot model (a .lo, a response file)
+			// must bail rather than silently drop the member.
+			name: "unmodellable member bails", args: []string{"rcs", "libfoo.a", "a.o", "x.lo"},
 			wantOK: false,
 		},
 		{
@@ -108,25 +116,23 @@ func TestParseARArgs(t *testing.T) {
 // using ar's positional-count forms, which no fixture and no example
 // build does — hence documented and pinned, not fixed here.
 func TestParseARArgsPositionalCountIsMisparsed(t *testing.T) {
-	t.Run("the accidental rejection", func(t *testing.T) {
-		// Rejected, but because of the .o filter, not the grammar.
-		if _, _, _, ok := parseARArgs([]string{"rN", "3", "archive.a", "obj.o"}); ok {
-			t.Error("expected bail (via the non-.o check)")
-		}
-	})
-
-	t.Run("the misparse the filter does not catch", func(t *testing.T) {
-		m, a, in, ok := parseARArgs([]string{"rN", "2", "weird.o", "member.o"})
-		if !ok {
-			t.Skip("parseARArgs now rejects positional-count forms — " +
-				"the grammar was fixed; delete this test and assert the fix instead")
-		}
-		if a != "2" {
-			t.Errorf("archive = %q; this test exists to pin the known-wrong %q. "+
-				"If it changed, the positional grammar was addressed.", a, "2")
-		}
-		t.Logf("known defect: mods=%q archive=%q inputs=%q", m, a, in)
-	})
+	for _, args := range [][]string{
+		{"rN", "3", "archive.a", "obj.o"},
+		// The form the old .o filter could NOT catch: every trailing
+		// token ends in .o, so the count was taken as the archive name
+		// and the real archive became a member.
+		{"rN", "2", "weird.o", "member.o"},
+		{"rb", "existing.o", "libfoo.a", "new.o"},
+		{"ri", "existing.o", "libfoo.a", "new.o"},
+		{"ra", "existing.o", "libfoo.a", "new.o"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			if _, _, _, ok := parseARArgs(args); ok {
+				t.Errorf("positional-argument modifier accepted; "+
+					"args[1] is not the archive here (args %q)", args)
+			}
+		})
+	}
 }
 
 // TestIsARModifiers pins the alphabet check. It is a set membership test
@@ -151,5 +157,38 @@ func TestIsARModifiers(t *testing.T) {
 		if got := isARModifiers(tc.in); got != tc.want {
 			t.Errorf("isARModifiers(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The recursive-archive case: a thin archive whose members include
+// both objects and a nested archive. Both used to fall through to
+// passthrough, where the real ar met a drvref stub.
+func TestParseARArgsNestedThinArchive(t *testing.T) {
+	mods, archive, inputs, ok := parseARArgs([]string{
+		"cDPrST", "lib/math/all.a",
+		"lib/math/div64.o", "lib/math/gcd.o",
+		"lib/math/tests/all.a",
+	})
+	if !ok {
+		t.Fatalf("parseARArgs rejected a nested thin-archive invocation")
+	}
+	if mods != "cDPrST" {
+		t.Errorf("modifiers = %q, want %q", mods, "cDPrST")
+	}
+	if archive != "lib/math/all.a" {
+		t.Errorf("archive = %q", archive)
+	}
+	if len(inputs) != 3 || inputs[2] != "lib/math/tests/all.a" {
+		t.Errorf("inputs = %q, want the nested .a retained", inputs)
+	}
+}
+
+func TestIsARModifiersAcceptsThin(t *testing.T) {
+	if !isARModifiers("cDPrST") {
+		t.Error("cDPrST rejected; T (thin archive) must be accepted")
+	}
+	// Still reject things that are plainly not a modifier string.
+	if isARModifiers("all.a") {
+		t.Error("a filename was accepted as a modifier string")
 	}
 }
