@@ -66,6 +66,10 @@ func TestFromArgv0(t *testing.T) {
 		{"ld.gold", ToolLD},
 		{"ld.lld", ToolLD},
 		{"x86_64-linux-gnu-ld", ToolLD},
+		// Not a compiler, but modelled: `ld -r` partial links fuse
+		// multi-object components. Anything that is not `-r`
+		// passes straight through — see shim.LD.
+		{"ld", ToolLD},
 
 		// Not compilers.
 		{"make", ToolUnknown},
