@@ -375,12 +375,13 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 // before -isystem ones. Every TU reaching SmallVector-style code failed
 // with "'struct tm' has no member".
 //
-// "-I." is always first so the staged root is on the include path.
-// Results are deduped by rel path, so a caller's `-I.` (== cwd == root)
-// or a repeated dir does not emit twice.
+// -I order is semantics, not style: the first directory containing
+// the named file wins, so reordering changes which header a TU
+// compiles against. Emit the caller's dirs in their original order,
+// appending a synthetic -I. only if they never named the root.
 func stagedIFlags(projectRoot string, callerDirs []string) []string {
-	iflags := []string{"-I."}
-	seenRel := map[string]bool{".": true}
+	var iflags []string
+	seenRel := map[string]bool{}
 	for _, p := range callerDirs {
 		rel := "."
 		if p != projectRoot {
@@ -394,9 +395,13 @@ func stagedIFlags(projectRoot string, callerDirs []string) []string {
 			continue
 		}
 		seenRel[rel] = true
-		if rel != "." {
-			iflags = append(iflags, "-I"+rel)
-		}
+		iflags = append(iflags, "-I"+rel)
+	}
+	// The staged root has to be reachable even when the caller never
+	// named it — a bare `cc -c foo.c` relies on it. Last, so it cannot
+	// shadow a directory the caller did name.
+	if !seenRel["."] {
+		iflags = append(iflags, "-I.")
 	}
 	return iflags
 }
