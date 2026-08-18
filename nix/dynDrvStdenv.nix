@@ -299,7 +299,15 @@ stdenv0.override (
                     unset NIXGG_BYPASS
                   '' + (orig.preBuild or "");
 
-                  postBuild = (orig.postBuild or "") + submitBuildTreeScript outerName;
+                  # A real phase, not a postBuild hook: postBuild only
+                  # runs if the package's buildPhase calls runHook, and
+                  # many hand-written ones do not (nixpkgs' own
+                  # linux-config among them) — those built fine,
+                  # submitted nothing, and failed with Nix's opaque
+                  # "failed to submit output path for 'out'".
+                  # postPhases is spliced on unconditionally by setup.sh.
+                  postPhases = (lib.toList (orig.postPhases or [ ])) ++ [ "ggSubmitPhase" ];
+                  ggSubmitPhase = submitBuildTreeScript outerName;
                 }
                 // nonexistentOut;
             in
