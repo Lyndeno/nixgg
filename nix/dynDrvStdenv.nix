@@ -399,6 +399,16 @@ stdenv0.override (
                   chmod -R u+w "$NIX_BUILD_TOP"
                   cd "$NIX_BUILD_TOP/$(cat "$NIX_BUILD_TOP/.gg-cwd")"
                   ${ggRestoreEnv}
+
+                  # Phase 2 needs the shims reachable but inert: build
+                  # systems bake absolute tool paths at configure time
+                  # (cmake does; a caller can via makeFlags), so those
+                  # paths get invoked here whether or not we planned for
+                  # it. Without the env the shim cannot build its config
+                  # and exits non-zero. Nothing is left to accelerate, so
+                  # BYPASS makes each one exec the real tool.
+                  export NIXGG_BYPASS=1
+                  ${ggShimsOnPath knownStorePathsJSON}
                   export DESTDIR="$NIX_BUILD_TOP/.gg-destdir"
                   # `export DESTDIR` alone is not enough: some packages'
                   # own Configure/Makefile (openssl's
