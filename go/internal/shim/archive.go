@@ -48,6 +48,11 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return RealiseThunkArgsAndPassthrough(cfg, l, realARFor(cfg), args, sandbox.Enabled())
 	}
 
+	if carvedOut(archive) {
+		logf("ar passthrough: %s is in a carved-out subtree", archive)
+		return Passthrough(realARFor(cfg), args)
+	}
+
 	logf("archive %s <- %s", archive, joinBase(inputs))
 
 	if handled, err := tryBatchArchive(cfg, l, archive, modifiers, inputs); handled {

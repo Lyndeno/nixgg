@@ -44,13 +44,38 @@ func LD(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	flags, output, inputs, ok := parseLDArgs(args)
 	if !ok {
 		// Not a `-r` partial link, so it is an ordinary full link —
-		// hand it to Link rather than passing through, which is what
-		// keeps a raw `ld` final link (Kbuild's cmd_ld) inside nixgg's
-		// graph. Quiet: this is the overwhelmingly common case and
+		// hand it to Link rather than passing through, which keeps a
+		// raw `ld` final link (Kbuild's cmd_ld) inside nixgg's graph.
+		//
+		// Except in a carved-out subtree. Kbuild runs `ld` with cwd
+		// INSIDE the object directory, so `-o realmode.elf` arrives
+		// bare — and a bare name matches neither passthroughPaths nor
+		// mode.ForLink's own Kbuild carveouts, both of which key on the
+		// full path. The link then gets modelled, arch/x86/tools/relocs
+		// reads the drvref stub back synchronously, and the build dies
+		// with "No ELF magic" — a message that names nothing useful.
+		// Resolve against cwd first so the subtree is visible.
+		if out := ldOutputArg(args); out != "" {
+			if abs, err := filepath.Abs(out); err == nil && carvedOut(abs) {
+				logf("ld passthrough: %s is in a carved-out subtree", out)
+				return Passthrough(real, args)
+			}
+		}
+		// Quiet otherwise: this is the overwhelmingly common case and
 		// logging each one would bury the lines that matter.
 		return Link(dispatch.ToolLD, args, cfg, l)
 	}
 
+	// Same carveout for the `-r` path, where parseLDArgs already gave
+	// us the output. Checked absolute for the same cwd reason.
+	if carvedOut(output) {
+		logf("ld passthrough: %s is in a carved-out subtree", output)
+		return Passthrough(real, args)
+	}
+	if abs, err := filepath.Abs(output); err == nil && carvedOut(abs) {
+		logf("ld passthrough: %s is in a carved-out subtree", output)
+		return Passthrough(real, args)
+	}
 	logf("ld -r %s <- %s", output, joinBase(inputs))
 
 	ci, err, ok := classifyInputs(cfg, inputs, altStorePrefix(cfg.Store), l, "ld",
@@ -185,4 +210,21 @@ var ldTwoArg = map[string]bool{
 	"--architecture": true, "--defsym": true, "--dynamic-linker": true,
 	"--entry": true, "--script": true, "--soname": true, "--wrap": true,
 	"-rpath": true, "--rpath": true, "--undefined": true,
+}
+
+// ldOutputArg pulls the `-o` value out of a raw ld command line.
+//
+// Separate from parseLDArgs, which bails on anything that is not a `-r`
+// link and so cannot report the output for the full-link case — the one
+// place LD needs it to test a carveout before handing off to Link.
+func ldOutputArg(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-o" && i+1 < len(args):
+			return args[i+1]
+		case strings.HasPrefix(args[i], "-o") && len(args[i]) > 2:
+			return args[i][2:]
+		}
+	}
+	return ""
 }
