@@ -116,7 +116,13 @@ func Rustc(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	if err != nil {
 		return err
 	}
-	flags := rc.Flags
+	// Flags naming a file the compile reads — a custom target spec —
+	// get their own store object; the scan cannot see them, and the
+	// filename has to survive intact. See storeFlagFiles.
+	flags, flagDeps, err := storeFlagFiles(cfg, rc.Flags)
+	if err != nil {
+		return err
+	}
 
 	srcRel := srcAbs
 	entries := make([]stage.Entry, 0, 1+len(res.Headers))
@@ -157,7 +163,7 @@ func Rustc(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return fmt.Errorf("stage crate to store: %w", err)
 	}
 
-	storeDeps := storedeps.From(flags, "", cfg.KnownStorePaths)
+	storeDeps := append(storedeps.From(flags, "", cfg.KnownStorePaths), flagDeps...)
 
 	// 3. Build the drv. The emit names are basenames: every artifact
 	// lands flat in $out, and downstream stubs name it from there.
@@ -637,4 +643,61 @@ func writeRustDepFile(path, target, source string, sources []scan.Header) error 
 		return fmt.Errorf("write depfile %s: %w", path, err)
 	}
 	return nil
+}
+
+// rustcFileFlags are flags whose value is a FILE the compile reads, so
+// it has to travel into the derivation like a source.
+//
+// An explicit list, for the reason objcopyTwoArg is one: the value of a
+// flag is not self-identifying, and a wrong guess here either drops a
+// real input or rewrites something that was never a path. The scan
+// cannot find these — rustc's dep-info reports what the CRATE reads,
+// and a target specification is read by the driver before any crate
+// exists.
+//
+//	--target   a custom target spec (`--target=…/scripts/target.json`).
+//	           Also spelled as a builtin triple name, which is not a
+//	           file and is left alone.
+var rustcFileFlags = map[string]bool{"--target": true}
+
+// storeFlagFiles gives each file-valued flag its own store object and
+// rewrites the flag to point there.
+//
+// A store object rather than a staged tree entry, because the FILENAME
+// is load-bearing and staging does not preserve it. rustc names a
+// custom target after its spec file's stem, and `libcore.rmeta` is only
+// loadable by a compile whose target has the same name. Shared staging
+// replaces the staged file with a symlink into a per-file store object
+// named `<hash>-target.json`; rustc follows it and calls the target
+// `<hash>-target`, which matches nothing:
+//
+//	error[E0463]: can't find crate for `core`
+//	  = note: the `pr5ngxn…-target` target may not be installed
+//
+// storeAddLooseFile keeps the basename intact inside its own directory,
+// so the stem stays `target` however the file got there.
+func storeFlagFiles(cfg *toolchain.Config, flags []string) ([]string, []string, error) {
+	out := make([]string, len(flags))
+	copy(out, flags)
+	var deps []string
+	for i, f := range out {
+		name, value, ok := strings.Cut(f, "=")
+		if !ok || !rustcFileFlags[name] {
+			continue
+		}
+		abs, err := filepath.Abs(value)
+		if err != nil || !isRegularFile(abs) {
+			continue
+		}
+		if strings.HasPrefix(abs, "/nix/store/") {
+			continue // already content-addressed and mounted
+		}
+		sp, err := storeAddLooseFile(cfg, abs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("store %s value %s: %w", name, abs, err)
+		}
+		out[i] = name + "=" + filepath.Join(sp, filepath.Base(abs))
+		deps = append(deps, sp)
+	}
+	return out, deps, nil
 }
