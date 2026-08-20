@@ -268,3 +268,31 @@ func TestParseRustcArgsKeepsScanFlags(t *testing.T) {
 		}
 	}
 }
+
+// A builtin target triple is not a file and must be left alone.
+// Rewriting it would turn a valid target into a missing path, and
+// store-adding it is meaningless.
+func TestStoreFlagFilesLeavesTripleAlone(t *testing.T) {
+	in := []string{"--target=x86_64-unknown-none", "--edition=2021"}
+	flags, deps, err := storeFlagFiles(nil, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(flags, in) || len(deps) != 0 {
+		t.Errorf("flags = %q deps = %v; want unchanged", flags, deps)
+	}
+}
+
+// A spec already in the store keeps its path: it is content-addressed
+// and mounted already, and re-adding it would change the filename rustc
+// derives the target NAME from.
+func TestStoreFlagFilesSkipsStorePaths(t *testing.T) {
+	in := []string{"--target=/nix/store/aaa-spec/target.json"}
+	flags, deps, err := storeFlagFiles(nil, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(flags, in) || len(deps) != 0 {
+		t.Errorf("flags = %q deps = %v; want unchanged", flags, deps)
+	}
+}
