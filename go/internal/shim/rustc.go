@@ -178,6 +178,7 @@ func Rustc(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		Externs:   externs,
 		Emits:     emits,
 		StoreDeps: storeDeps,
+		Env:       rustcEnv(res.ProjectRoot, srcStore),
 		ExtraSrcs: []string{
 			baseNameOf(cfg.BashRoot),
 			baseNameOf(cfg.CoreutilsRoot),
