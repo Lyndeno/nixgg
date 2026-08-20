@@ -32,6 +32,11 @@ const (
 	// modules with it (cmd_ld_multi_m) and runs it over single-object
 	// modules too (cmd_ld_single).
 	ToolLD
+	// ToolRustc: a rustc crate compile. Unlike the C compilers, one
+	// invocation consumes a whole crate — a source file plus every
+	// module, `include!` and macro file it reaches — and may emit
+	// several artifacts from it.
+	ToolRustc
 	// ToolObjcopy: a generic object rewrite
 	// (scripts/Makefile.lib cmd_objcopy), used for symbol prefixing in
 	// symbol prefixing and section stripping.
@@ -61,6 +66,8 @@ func (t Tool) Basename() string {
 		return "ld"
 	case ToolObjcopy:
 		return "objcopy"
+	case ToolRustc:
+		return "rustc"
 	}
 	return ""
 }
@@ -126,6 +133,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolLD
 	case "objcopy":
 		return ToolObjcopy
+	case "rustc":
+		return ToolRustc
 	}
 	return ToolUnknown
 }

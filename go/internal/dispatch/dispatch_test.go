@@ -64,6 +64,11 @@ func TestFromArgv0(t *testing.T) {
 		// passes straight through — see shim.LD.
 		{"ld", ToolLD},
 
+		// A whole-crate compiler rather than a per-TU one — see
+		// shim.Rustc. Reached through PATH, which no other shim is.
+		{"rustc", ToolRustc},
+		{"/nix/store/xxx-rustc-1.95.0/bin/rustc", ToolRustc},
+
 		// Not compilers.
 		{"make", ToolUnknown},
 		{"python3", ToolUnknown},
