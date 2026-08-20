@@ -61,6 +61,7 @@ QUICK=(
   "fmt|lib/libfmt.a|-"
   "lua|bin/lua|%s -v"
   "gcc|lib/libiberty.a|-"
+  "rustc|lib/libapp.a|-"
   "mosh|bin/mosh-server|%s --version"
   "thin-archive|bin/thin-archive|%s"
 )
