@@ -163,7 +163,18 @@ func Rustc(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return fmt.Errorf("stage crate to store: %w", err)
 	}
 
+	// storeDeps is computed BEFORE any spill: once the flags collapse to
+	// a single `@<path>`, the store paths they mentioned are no longer
+	// visible to scan for, and anything they referred to would stop
+	// being mounted.
 	storeDeps := append(storedeps.From(flags, "", cfg.KnownStorePaths), flagDeps...)
+	flags, argfile, err := spillFlagsToArgfile(cfg, flags)
+	if err != nil {
+		return err
+	}
+	if argfile != "" {
+		storeDeps = append(storeDeps, argfile)
+	}
 
 	// 3. Build the drv. The emit names are basenames: every artifact
 	// lands flat in $out, and downstream stubs name it from there.
@@ -700,4 +711,71 @@ func storeFlagFiles(cfg *toolchain.Config, flags []string) ([]string, []string, 
 		deps = append(deps, sp)
 	}
 	return out, deps, nil
+}
+
+// MaxInlineFlagBytes caps how much flag text may be rendered directly
+// into a derivation's build script.
+//
+// The script is one argument to `bash -c`, and the kernel's execve caps
+// a single argument at MAX_ARG_STRLEN — 32 pages, 131072 bytes, a
+// compile-time constant with no runtime knob. Exceeding it fails the
+// builder with "Argument list too long" and nothing that names the
+// flags as the cause.
+//
+// Rust reaches this where C does not. A kernel's generated cfg file is
+// 19,746 lines and 601 KB — one `--cfg=CONFIG_…` per config symbol —
+// and rustc takes it as an @-file precisely so it never has to be a
+// command line. Expanding it inline to model the compile puts all
+// 601 KB back into one argument.
+//
+// Well under the limit, because externs, search paths, emits and the
+// store paths around them share the same argument.
+const MaxInlineFlagBytes = 32 << 10
+
+// spillFlagsToArgfile moves an oversized flag list into a store object
+// and returns the flags replaced by a single `@<path>` referring to it,
+// plus that path so the caller can mount it.
+//
+// This is not a size trick at the expense of correctness: rustc reads
+// @-files one argument per line, the object is content-addressed, and
+// it enters the derivation as an input — so the compile still depends
+// on every flag byte exactly as it did when they were inline. Two
+// crates with identical flags share one object.
+//
+// Below the threshold nothing changes, so small builds keep the legible
+// inline form and their existing drv hashes.
+func spillFlagsToArgfile(cfg *toolchain.Config, flags []string) ([]string, string, error) {
+	n, fits := flagsFitInline(flags)
+	if fits {
+		return flags, "", nil
+	}
+
+	dir, err := os.MkdirTemp(os.Getenv("NIX_BUILD_TOP"), "gg-rustargs-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer os.RemoveAll(dir)
+	// One argument per line, which is the whole of rustc's @-file
+	// grammar — see dispatch.ExpandRustArgfiles.
+	path := filepath.Join(dir, "rustc-args")
+	if err := os.WriteFile(path, []byte(strings.Join(flags, "\n")+"\n"), 0o644); err != nil {
+		return nil, "", err
+	}
+	sp, err := storeAddLooseFile(cfg, path)
+	if err != nil {
+		return nil, "", err
+	}
+	logf("  argfile:    %d flags (%d bytes) -> %s", len(flags), n, sp)
+	return []string{"@" + sp + "/rustc-args"}, sp, nil
+}
+
+// flagsFitInline reports the rendered size of a flag list and whether
+// it may go into the build script directly. Separate from the spill so
+// the boundary can be checked without a store.
+func flagsFitInline(flags []string) (int, bool) {
+	n := 0
+	for _, f := range flags {
+		n += len(f) + 1
+	}
+	return n, n <= MaxInlineFlagBytes
 }
