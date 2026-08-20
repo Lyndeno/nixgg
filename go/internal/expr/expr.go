@@ -396,18 +396,18 @@ type TransformJSONParams struct {
 // one object, emit the same object rewritten. Sandbox mode only.
 func TransformJSON(p TransformJSONParams) JSONDrv {
 	d := &Derivation{
-		Kind:       KindTransform,
+		Kind:        KindTransform,
 		ToolInPlace: p.InPlace,
-		Name:       p.Name,
-		System:     p.System,
-		Bash:       p.Bash,
-		Coreutils:  p.Coreutils,
-		OutName:    p.OutName,
-		ToolBin:    p.ToolBin,
-		Flags:      p.Flags,
-		Inputs:     inputsFromJSON([]JSONDrvInput{p.Input}),
-		StoreDeps:  p.StoreDeps,
-		WrapperEnv: p.Env,
+		Name:        p.Name,
+		System:      p.System,
+		Bash:        p.Bash,
+		Coreutils:   p.Coreutils,
+		OutName:     p.OutName,
+		ToolBin:     p.ToolBin,
+		Flags:       p.Flags,
+		Inputs:      inputsFromJSON([]JSONDrvInput{p.Input}),
+		StoreDeps:   p.StoreDeps,
+		WrapperEnv:  p.Env,
 	}
 	return d.toJSON(p.ExtraSrcs, nil)
 }
