@@ -811,6 +811,16 @@
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the
             # phase-chaining pattern examples/llvm relies on.
+            # Two Rust crates built by make and bare rustc — the shape
+            # kbuild uses, and the only one the rustc shim models. See
+            # its docstring for what it covers that nothing else does.
+            rustc = {
+              dir = ./examples/rustc;
+              args = {
+                inherit (pkgs) rustc;
+                src = ./examples/rustc;
+              };
+            };
             two-phase = {
               dir = ./examples/two-phase;
               args = {
