@@ -269,6 +269,32 @@ func TestParseRustcArgsKeepsScanFlags(t *testing.T) {
 	}
 }
 
+// A kernel's generated cfg file is 19,746 lines and 601 KB — one
+// `--cfg=CONFIG_…` per config symbol. rustc takes it as an @-file
+// precisely so it never has to be a command line; expanding it inline
+// to model the compile puts all 601 KB into the single `bash -c`
+// argument the builder runs, and execve caps that at MAX_ARG_STRLEN
+// (32 pages, 131072 bytes, a compile-time kernel constant with no
+// runtime knob). The builder then dies with "Argument list too long"
+// and nothing that names the flags as the cause.
+func TestFlagsFitInline(t *testing.T) {
+	if _, fits := flagsFitInline([]string{"--edition=2021", "-Cpanic=abort"}); !fits {
+		t.Error("an ordinary flag list must stay inline; spilling it would move every drv hash")
+	}
+
+	var kernelCfg []string
+	for i := 0; i < 19746; i++ {
+		kernelCfg = append(kernelCfg, `--cfg=CONFIG_SOME_LONGISH_SYMBOL_NAME="m"`)
+	}
+	n, fits := flagsFitInline(kernelCfg)
+	if n < 600_000 {
+		t.Fatalf("fixture is %d bytes; the real kernel cfg file is ~601 KB", n)
+	}
+	if fits {
+		t.Errorf("a %d-byte flag list was judged inlineable, %d over MAX_ARG_STRLEN", n, n-131072)
+	}
+}
+
 // A builtin target triple is not a file and must be left alone.
 // Rewriting it would turn a valid target into a missing path, and
 // store-adding it is meaningless.
