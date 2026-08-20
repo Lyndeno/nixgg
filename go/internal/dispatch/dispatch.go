@@ -29,6 +29,11 @@ const (
 	// compiling it. Reached only when the caller points the build's
 	// `objtool=` make variable at our shim.
 	ToolObjtool
+	// ToolRustc: a rustc crate compile. Unlike the C compilers, one
+	// invocation consumes a whole crate — a source file plus every
+	// module, `include!` and macro file it reaches — and may emit
+	// several artifacts from it.
+	ToolRustc
 	// ToolObjcopy: a generic object rewrite
 	// (scripts/Makefile.lib cmd_objcopy), used for symbol prefixing
 	// and section stripping.
@@ -58,6 +63,8 @@ func (t Tool) Basename() string {
 		return "objtool"
 	case ToolObjcopy:
 		return "objcopy"
+	case ToolRustc:
+		return "rustc"
 	}
 	return ""
 }
@@ -123,6 +130,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolObjtool
 	case "objcopy":
 		return ToolObjcopy
+	case "rustc":
+		return ToolRustc
 	}
 	return ToolUnknown
 }
