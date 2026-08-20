@@ -67,38 +67,52 @@ type Result struct {
 //   - source: caller's source file (relative to cwd is fine)
 //   - flags: everything else on argv (no -c/-o).
 //
-// Uses the cache under l.Scans if all deps' mtimes match.
+// Uses the cache under l.Scans if all deps mtimes match.
 func Run(l paths.Layout, cc, source string, flags []string) (*Result, error) {
 	if err := os.MkdirAll(l.Scans, 0o755); err != nil {
 		return nil, err
 	}
 	key := cacheKey(cc, source, flags)
-	depsPath := filepath.Join(l.Scans, key+".deps")
-	outPath := filepath.Join(l.Scans, key+".out")
-
-	if fresh, err := depsStillFresh(depsPath); err == nil && fresh {
-		if body, err := os.ReadFile(outPath); err == nil {
-			var r Result
-			if err := decodeResult(body, &r); err == nil {
-				return &r, nil
-			}
-		}
+	if r, ok := readCache(l, key); ok {
+		return r, nil
 	}
-
-	// Cache miss — do the real work.
 	r, deps, err := runScanner(cc, source, flags)
 	if err != nil {
 		return nil, err
 	}
+	writeCache(l, key, r, deps)
+	return r, nil
+}
+
+// readCache returns the memoised Result for key when every file it was
+// derived from still has the mtime the scan saw.
+func readCache(l paths.Layout, key string) (*Result, bool) {
+	if fresh, err := depsStillFresh(filepath.Join(l.Scans, key+".deps")); err != nil || !fresh {
+		return nil, false
+	}
+	body, err := os.ReadFile(filepath.Join(l.Scans, key+".out"))
+	if err != nil {
+		return nil, false
+	}
+	var r Result
+	if err := decodeResult(body, &r); err != nil {
+		return nil, false
+	}
+	return &r, true
+}
+
+// writeCache is best-effort: a scan that cannot be memoised still
+// returns its result, it just costs the same again next time. The deps
+// file is written only after the result, so a half-written cache is
+// never treated as fresh.
+func writeCache(l paths.Layout, key string, r *Result, deps []depEntry) {
 	body, err := encodeResult(r)
 	if err != nil {
-		return nil, err
+		return
 	}
-	// Write cache best-effort. If it fails we still return the result.
-	if err := writeAtomic(outPath, body); err == nil {
-		_ = writeAtomic(depsPath, encodeDeps(deps))
+	if err := writeAtomic(filepath.Join(l.Scans, key+".out"), body); err == nil {
+		_ = writeAtomic(filepath.Join(l.Scans, key+".deps"), encodeDeps(deps))
 	}
-	return r, nil
 }
 
 // depEntry is one line in the .deps file: <abs>\t<mtime-nsec>.
