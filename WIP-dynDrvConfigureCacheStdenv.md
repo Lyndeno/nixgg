@@ -164,8 +164,30 @@ reasoning as `zstd-cache`). Verified directly:
    to `extraGroupBAttrs` too only if group B's OWN build step (not
    just configure) also needs to see it.
 
-## Deferred (explicitly out of scope for this pass)
+## Multi-output + configureSrcFilter combined — resolved
 
-- Multi-output + `configureSrcFilter` combined on the same package
-  (hello only tests single-output+filter, zstd only tests
-  multi-output+no-filter — the combination is untested).
+Previously deferred: hello only tested single-output+filter, zstd only
+tested multi-output+no-filter (its own `CMakeLists.txt` globs sources,
+so filtering can't preserve early-cutoff for it regardless). Closed by
+adding `gdbm` as a fourth fixture — autotools, plain `configure` (no
+`autoreconfHook`), 5 real outputs (`out dev info lib man`),
+`AC_CONFIG_SRCDIR([src/gdbmdefs.h])`:
+
+- `.#gdbm-dyndrv-configure-cached` in `flake.nix`, using the same
+  `configureSrcFilterPresets.autotools` preset hello uses.
+- Added to `tests/smoke.sh`'s `DYNCONFIGCACHE` set — builds, all 5
+  outputs populated by group C's `restoreOutputsScript`, `nix run
+  .#gdbm-dyndrv-configure-cached -- --version` prints the real
+  `gdbmtool` banner (multi-output RPATH fixup + restore-outputs
+  confirmed working end to end).
+- `tests/dyndrv-configure-cache-cutoff.sh`/`-fixture.nix` parameterized
+  over `package` (`hello` | `gdbm`) instead of hardcoding hello — group
+  A's own `ggtree` output path is identical for baseline vs. an edit to
+  `src/avail.c` (excluded by the autotools preset) and different for
+  an edit to `configure.ac` (included). Verified directly: PASS for
+  both packages.
+
+No new gotchas beyond what hello/zstd already surfaced — the
+multi-output restore/rpath-fixup machinery is shared verbatim with
+`dynDrvStdenv`'s own group C and doesn't care whether group A was
+filtered or not.

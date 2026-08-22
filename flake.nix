@@ -456,6 +456,23 @@
                   };
                 };
               };
+            # gdbm through the combined mechanism, WITH
+            # configureSrcFilter: the untested combination
+            # WIP-dynDrvConfigureCacheStdenv.md's "Deferred" section
+            # flagged (hello only covered single-output+filter,
+            # zstd only covered multi-output+no-filter). gdbm is
+            # autotools, plain configure (no autoreconfHook), and
+            # multi-output (out/dev/info/lib/man) — its own
+            # AC_CONFIG_SRCDIR argument is src/gdbmdefs.h.
+            gdbm-dyndrv-configure-cached = pkgs.gdbm.override {
+              stdenv = dynDrvConfigureCacheStdenv {
+                stdenv = pkgs.stdenv;
+                configureSrcFilter = {
+                  includePatterns = configureSrcFilterPresets.autotools;
+                  existenceStubs = [ "src/gdbmdefs.h" ];
+                };
+              };
+            };
           };
 
           # Concrete mkNixggBuild call sites, exposed as flake
@@ -578,7 +595,7 @@
         // exampleShells    # .#<name>-shell for each of the above
         // dynDrvExamples   # .#hello-dyndrv .#mosh-dyndrv .#zstd-dyndrv
         // configureCacheExamples   # .#hello-cache .#zstd-cache .#hello-cache-filtered .#fmt-cache-filtered
-        // dynDrvConfigureCacheExamples   # .#hello-dyndrv-configure-cached .#mosh-dyndrv-configure-cached .#zstd-dyndrv-configure-cached
+        // dynDrvConfigureCacheExamples   # .#hello-dyndrv-configure-cached .#mosh-dyndrv-configure-cached .#zstd-dyndrv-configure-cached .#gdbm-dyndrv-configure-cached
         // {
           # Extras an individual example exposes beyond .result/.shell.
           # llvm's two tblgen phases are separately buildable so the

@@ -21,11 +21,12 @@
 #
 # This only checks the caching *mechanism* — whether the resulting
 # package builds/runs is tests/smoke.sh's DYNCONFIGCACHE set's job,
-# not this script's. hello only: the combined mechanism's other
-# fixture (zstd) has no configureSrcFilter to test cutoff against
-# (see nix/dynDrvConfigureCacheStdenv.nix's flake.nix usage — zstd's
-# own CMakeLists.txt globs its sources, so filtering can't preserve
-# early-cutoff for it at all).
+# not this script's. hello (single-output) and gdbm (multi-output:
+# out/dev/info/lib/man) are both run through this — the combined
+# mechanism's third fixture (zstd) has no configureSrcFilter to test
+# cutoff against at all (see nix/dynDrvConfigureCacheStdenv.nix's
+# flake.nix usage — zstd's own CMakeLists.txt globs its sources, so
+# filtering can't preserve early-cutoff for it).
 #
 # Env knobs:
 #   ALT_STORE      root of the alt store (default /tmp/nixgg-dyndrv-cutoff-store)
@@ -59,22 +60,23 @@ extra-system-features = builder-rpc-v0
 store = local?root=$ALT_STORE
 "
 
-# groupA_ggtree_path <edit-arg>
+# groupA_ggtree_path <package> <edit-arg>
 #
-# Instantiates the fixture with the given edit, extracts group A's
-# own derivation (the one named *-configure-<version> — nested one
+# Instantiates the fixture with the given package/edit, extracts group
+# A's own derivation (the one named *-configure-<version> — nested one
 # level inside the outer drv's *.drv.drv input, since group B sits
 # between the outer package derivation and group A here), builds ONLY
 # its "ggtree" output, and prints the resulting real store path.
 groupA_ggtree_path() {
-  local edit_arg="$1"
+  local package="$1" edit_arg="$2"
   local outer_drv group_b_drv group_a_drv
 
   outer_drv=$("$PATCHED_NIX/bin/nix-instantiate" --impure \
     --arg flakeDir "$nixgg_root" \
+    --argstr package "$package" \
     ${edit_arg:+--argstr edit "$edit_arg"} \
     "$fixture_nix" 2>/tmp/nixgg-dyndrv-cutoff-instantiate.log) || {
-      echo "  instantiate failed (edit=$edit_arg); see /tmp/nixgg-dyndrv-cutoff-instantiate.log" >&2
+      echo "  instantiate failed (package=$package edit=$edit_arg); see /tmp/nixgg-dyndrv-cutoff-instantiate.log" >&2
       tail -10 /tmp/nixgg-dyndrv-cutoff-instantiate.log >&2
       return 1
     }
@@ -88,7 +90,7 @@ matches = [k for k in info['inputs']['drvs'] if k.endswith('.drv.drv')]
 print(matches[0] if matches else '')
 ")
   if [[ -z "$group_b_drv" ]]; then
-    echo "  could not find group B derivation (edit=$edit_arg)" >&2
+    echo "  could not find group B derivation (package=$package edit=$edit_arg)" >&2
     return 1
   fi
 
@@ -101,41 +103,55 @@ matches = [k for k in info['inputs']['drvs'] if '-configure-' in k]
 print(matches[0] if matches else '')
 ")
   if [[ -z "$group_a_drv" ]]; then
-    echo "  could not find group A derivation (edit=$edit_arg)" >&2
+    echo "  could not find group A derivation (package=$package edit=$edit_arg)" >&2
     return 1
   fi
 
   "$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link --print-out-paths \
     "/nix/store/$group_a_drv^ggtree" 2>/tmp/nixgg-dyndrv-cutoff-build.log | tail -1 || {
-      echo "  group A build failed (edit=$edit_arg); see /tmp/nixgg-dyndrv-cutoff-build.log" >&2
+      echo "  group A build failed (package=$package edit=$edit_arg); see /tmp/nixgg-dyndrv-cutoff-build.log" >&2
       tail -10 /tmp/nixgg-dyndrv-cutoff-build.log >&2
       return 1
     }
 }
 
-printf '\033[1;36m===== hello (dynDrvConfigureCacheStdenv) =====\033[0m\n'
+run_cutoff_check() {
+  local package="$1"
 
-baseline=$(groupA_ggtree_path "") || exit 1
-echo "  baseline: $baseline"
+  baseline=$(groupA_ggtree_path "$package" "") || return 1
+  echo "  baseline: $baseline"
 
-excluded=$(groupA_ggtree_path "excluded") || exit 1
-echo "  excluded: $excluded"
+  excluded=$(groupA_ggtree_path "$package" "excluded") || return 1
+  echo "  excluded: $excluded"
 
-included=$(groupA_ggtree_path "included") || exit 1
-echo "  included: $included"
+  included=$(groupA_ggtree_path "$package" "included") || return 1
+  echo "  included: $included"
 
-ok=1
-if [[ "$excluded" != "$baseline" ]]; then
-  printf '\033[1;31m  FAIL\033[0m excluded-file edit changed group A output — early-cutoff broken\n' >&2
-  ok=0
-fi
-if [[ "$included" == "$baseline" ]]; then
-  printf '\033[1;31m  FAIL\033[0m included-file edit did NOT change group A output — filter not discriminating (excludes everything?)\n' >&2
-  ok=0
-fi
+  local ok=1
+  if [[ "$excluded" != "$baseline" ]]; then
+    printf '\033[1;31m  FAIL\033[0m excluded-file edit changed group A output — early-cutoff broken\n' >&2
+    ok=0
+  fi
+  if [[ "$included" == "$baseline" ]]; then
+    printf '\033[1;31m  FAIL\033[0m included-file edit did NOT change group A output — filter not discriminating (excludes everything?)\n' >&2
+    ok=0
+  fi
 
-if [[ "$ok" != "1" ]]; then
+  if [[ "$ok" != "1" ]]; then
+    return 1
+  fi
+  printf '\033[1;32m  PASS\033[0m excluded-edit cached, included-edit invalidated\n'
+}
+
+overall_ok=1
+
+printf '\033[1;36m===== hello (dynDrvConfigureCacheStdenv, single-output) =====\033[0m\n'
+run_cutoff_check hello || overall_ok=0
+
+printf '\033[1;36m===== gdbm (dynDrvConfigureCacheStdenv, multi-output: out/dev/info/lib/man) =====\033[0m\n'
+run_cutoff_check gdbm || overall_ok=0
+
+if [[ "$overall_ok" != "1" ]]; then
   echo "early-cutoff verification failed."
   exit 1
 fi
-printf '\033[1;32m  PASS\033[0m excluded-edit cached, included-edit invalidated\n'

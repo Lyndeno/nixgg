@@ -129,6 +129,7 @@ DYNCONFIGCACHE=(
   "hello-dyndrv-configure-cached|bin/hello|%s"
   "mosh-dyndrv-configure-cached|bin/mosh-server|%s --version"
   "zstd-dyndrv-configure-cached|bin/zstd|%s --version"
+  "gdbm-dyndrv-configure-cached|bin/gdbmtool|%s --version"
 )
 
 case "${EXAMPLES:-quick}" in

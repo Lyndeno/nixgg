@@ -7,9 +7,16 @@
 # that way never reaches group A at all), parameterized to drive three
 # scenarios: baseline, an edit to a file the filter excludes, an edit
 # to a file it includes.
+#
+# `package` selects which fixture package to build — "hello"
+# (single-output) or "gdbm" (multi-output: out/dev/info/lib/man,
+# AC_CONFIG_SRCDIR = src/gdbmdefs.h) — so the same cutoff mechanics get
+# exercised against the untested multi-output+filter combination
+# WIP-dynDrvConfigureCacheStdenv.md's "Deferred" section flagged.
 {
   flakeDir, # path to the nixgg checkout, passed by the driver script
   edit ? null, # null | "excluded" | "included"
+  package ? "hello", # "hello" | "gdbm"
 }:
 let
   flake = builtins.getFlake (toString flakeDir);
@@ -18,38 +25,55 @@ let
   dynDrvConfigureCacheStdenv = flake.outputs.packages.${builtins.currentSystem}.dynDrvConfigureCacheStdenv;
   configureSrcFilterPresets = flake.outputs.packages.${builtins.currentSystem}.configureSrcFilterPresets;
 
-  realSrc = pkgs.hello.src;
-  excludedEditPath = "src/hello.c";
+  fixtures = {
+    hello = {
+      pname = "hello";
+      version = "2.12.3";
+      src = pkgs.hello.src;
+      excludedEditPath = "src/hello.c";
+      includedEditPath = "configure.ac";
+      existenceStubs = [ "src/hello.c" ];
+    };
+    gdbm = {
+      pname = "gdbm";
+      version = pkgs.gdbm.version;
+      src = pkgs.gdbm.src;
+      excludedEditPath = "src/avail.c";
+      includedEditPath = "configure.ac";
+      existenceStubs = [ "src/gdbmdefs.h" ];
+    };
+  };
+  f = fixtures.${package};
+
   excludedEditLine = "/* excluded-file cutoff test */\n";
-  includedEditPath = "configure.ac";
   includedEditLine = "dnl included-file cutoff test\n";
 
   editedSrc =
     let
-      path = if edit == "excluded" then excludedEditPath else includedEditPath;
+      path = if edit == "excluded" then f.excludedEditPath else f.includedEditPath;
       line = if edit == "excluded" then excludedEditLine else includedEditLine;
     in
-    pkgs.runCommand "hello-src-edited" { nativeBuildInputs = [ pkgs.gnutar pkgs.gzip ]; } ''
+    pkgs.runCommand "${f.pname}-src-edited" { nativeBuildInputs = [ pkgs.gnutar pkgs.gzip ]; } ''
       mkdir -p "$out"
-      if [ -d ${realSrc} ]; then
-        cp -a ${realSrc}/. "$out"
+      if [ -d ${f.src} ]; then
+        cp -a ${f.src}/. "$out"
       else
-        tar xf ${realSrc} -C "$out" --strip-components=1
+        tar xf ${f.src} -C "$out" --strip-components=1
       fi
       chmod -R u+w "$out"
       printf '%s' ${builtins.toJSON line} >> "$out"/${path}
     '';
 
-  src = if edit == null then realSrc else editedSrc;
+  src = if edit == null then f.src else editedSrc;
 in
 (dynDrvConfigureCacheStdenv {
   stdenv = pkgs.stdenv;
   configureSrcFilter = {
     includePatterns = configureSrcFilterPresets.autotools;
-    existenceStubs = [ "src/hello.c" ];
+    existenceStubs = f.existenceStubs;
   };
 }).mkDerivation {
-  pname = "hello";
-  version = "2.12.3";
+  pname = f.pname;
+  version = f.version;
   inherit src;
 }
