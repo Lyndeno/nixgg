@@ -16,6 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ubuntu-latest (24.04) restricts unprivileged user-namespace
+      # creation via AppArmor by default, which is exactly what Nix's
+      # build sandbox needs — every build fails at the first
+      # derivation with "error: executing '.../bash': No such file or
+      # directory" (the sandboxed child can't set up its mount
+      # namespace at all, which surfaces as a bogus ENOENT rather than
+      # a permissions error). Known, still-open upstream gap:
+      # https://github.com/DeterminateSystems/nix-installer-action/issues/193.
+      - name: Allow unprivileged user namespaces (Nix sandbox needs this on ubuntu-latest)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - uses: DeterminateSystems/nix-installer-action@v22
 
       # One-time build of the builder-rpc-v0-capable Nix this flake
@@ -51,6 +62,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      # Same AppArmor userns workaround as the smoke job above — see
+      # its comment for why this is needed on ubuntu-latest.
+      - name: Allow unprivileged user namespaces (Nix sandbox needs this on ubuntu-latest)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
       - uses: DeterminateSystems/nix-installer-action@v22
 
