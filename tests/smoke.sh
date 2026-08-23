@@ -239,9 +239,20 @@ check_example() {
     if out_txt=$(eval "$cmd" 2>&1 | head -1); then
       printf '\033[1;32m  OK\033[0m       $out/%s -> %s\n' "$want" "$out_txt"
     else
-      printf '\033[1;31m  RAN BUT FAILED\033[0m $out/%s -> %s\n' "$want" "$out_txt" >&2
-      fail=1
-      return
+      # A raw exec of the on-disk $ALT_STORE path can fail for a
+      # reason that has nothing to do with the build: it resolves its
+      # ELF interpreter/RPATH against the REAL filesystem root, so it
+      # only works if a fixed-output dep like glibc ALSO happens to
+      # already exist at that same store path outside the alt store —
+      # an ambient-host-state coincidence (see DYNDRV's own comment
+      # below on this exact mechanism), not something this build
+      # controls. Don't hard-fail on it; fall through to the `nix run`
+      # check below, which uses Nix's own private mount-namespace bind
+      # mount of $ALT_STORE onto /nix/store and is the actually
+      # reliable verification path — confirmed missing entirely on a
+      # fresh CI runner (this dev box's real /nix/store already had
+      # glibc cached from unrelated prior use, masking the gap).
+      printf '\033[1;33m  DIRECT EXEC SKIPPED\033[0m $out/%s -> %s (relying on nix run below)\n' "$want" "$out_txt"
     fi
   fi
 
