@@ -41,16 +41,12 @@ nix build .#fmt         # {fmt} 11.0.2 — cmake + ninja + libfmt.a
 nix build .#mosh        # mosh unstable — autoconf + protobuf + openssl/ncurses/zlib
 ```
 
-Both modes produce byte-identical `.drv` files. `nix build .#lua`
-gets an instant cache hit from an earlier native build in an
-extracted lua source tree, and vice versa.
-
-That holds by construction rather than by discipline: the build
-command is rendered once, in Go, and sandbox mode bakes it into a
-JSON drv while native mode passes the same text through a thunk for
+Both modes produce byte-identical `.drv` files, by construction: the
+build command is rendered once, in Go, and sandbox mode bakes it into
+a JSON drv while native mode passes the same text through a thunk for
 `nix/resolve-script.nix` to fill in the few values only Nix knows at
-eval time. The two modes cannot disagree about flag quoting or
-argument order because there is only one place that decides either.
+eval time. `nix build .#lua` gets an instant cache hit from an earlier
+native build in an extracted lua source tree, and vice versa.
 
 Two tests, covering different failure modes:
 
@@ -68,11 +64,22 @@ class of bug: it compares drv *hashes* and never realises an output, so
 it stayed green at 149/149 while a change to output placement left
 native mode unable to collect any artifact at all.
 
+Neither of the above catches a regression that widens *how much*
+rebuilds on a small edit — both only check "did the build
+succeed/match," not "how many translation units actually recompiled."
+[tests/perf-regression.sh](tests/perf-regression.sh) closes that gap:
+edit one `.c` file in a 34-TU fixture, assert exactly its own TU
+recompiles and every other one stays a cache hit — the actual property
+["Measured incremental-rebuild cost"](#measured-incremental-rebuild-cost)
+below claims openssl gets in practice.
+
 ### Invoking sandbox mode explicitly
 
-The `nix build .#hello` above assumes you are inside `nix develop`,
-which supplies the patched Nix and the experimental features. To run it
-from an arbitrary shell, spell out all four:
+`nix develop`'s shellHook already prepends the patched Nix to `PATH`
+and points `NIX_CONFIG` at an alt store (`local?root=/tmp/nixgg-store`,
+override via `NIXGG_STORE`), so the `nix build .#hello` above Just
+Works from inside it. To run sandbox mode from an arbitrary shell
+instead, spell out all four pieces yourself:
 
 ```sh
 nix build .#patched-nix -o .patched-nix     # one-time; substituted from cache
@@ -284,11 +291,10 @@ its own. The patch has to go through `dynDrvStdenv`'s
 `extraPhase1Attrs` parameter, not a plain `.overrideAttrs` — nixpkgs'
 own `.override`/`.overrideAttrs` reapplication contract always
 re-invokes the package function with its *original*, unpatched attrs
-first, so an attrs-level patch applied via `.overrideAttrs` can never
-reach phase 1 (confirmed directly: doing it that way produced a
-byte-identical phase-1 derivation to the fully unpatched build).
-`extraPhase1Attrs`/`extraPhase2Attrs` are spliced in before phase 1 is
-computed, at the `dynDrvStdenv { ...; }` call site itself:
+first, so an attrs-level patch applied via `.overrideAttrs` never
+reaches phase 1. `extraPhase1Attrs`/`extraPhase2Attrs` are spliced in
+before phase 1 is computed, at the `dynDrvStdenv { ...; }` call site
+itself:
 
 ```nix
 { pkgs, mkNixggBuild, dynDrvStdenv }:
@@ -335,8 +341,8 @@ package's `postPatch`, plus dynDrvStdenv's own shim-activation
 attrs — so appending to `old.postPatch`, as above, preserves
 everything already there. `extraPhase2Attrs` is the same shape for
 phase 2, mostly for symmetry: phase 2 *is* reachable via an ordinary
-`.overrideAttrs` on the returned package (confirmed directly — only
-phase 1 has the reapplication problem).
+`.overrideAttrs` on the returned package — only phase 1 has the
+reapplication problem.
 
 If you already have a package built through `dynDrvStdenv` and want
 to patch phase 1 without rebuilding the `dynDrvStdenv { ...; }` call
@@ -365,48 +371,44 @@ translation units) through `dynDrvStdenv`, both using
 `pkgs.openssl.override { stdenv = dynDrvStdenv { stdenv = pkgs.stdenv; }; }`
 as the baseline already built once:
 
-| Scenario | What changed | TUs recompiled | TUs reused from cache | Non-TU drvs freshly built |
-|---|---|---|---|---|
-| Baseline (cold) | first build of 3.6.3 | 2213 / 2213 | 0 | everything |
-| One-file patch (the CI case) | one real declaration added to `crypto/mem.c`, via `.overridePhase1Attrs`'s `postPatch` | 2 / 2213 (`tu-libcrypto-lib-mem.o`, `tu-libcrypto-shlib-mem.o` — both build units the one changed file feeds) | 2211 / 2213 (99.9%) | 13, ALL with a hash never seen in the baseline build (verified: zero overlap between the two runs' "actually built" drv sets) — the 7 engine `.so`s and `bin-libssl.so.3`/`bin-libcrypto.so.3`/`bin-openssl` that link against the changed object, plus the outer `openssl-3.6.3.drv`/`gg-build-openssl-3.6.3.drv` wrapper drvs |
-| Version bump (3.6.3 → 3.5.7) | full release bump, same package | 2153 / 2192 (98%) | 39 / 2192 (2%, all perl-generated x86_64 asm — `aesni-*`, `rsaz-*`, `md5-x86_64`, `wp-x86_64`, plus one templated `.c`) | effectively everything |
+| Scenario | What changed | TUs recompiled | Non-TU drvs freshly built |
+|---|---|---|---|
+| Baseline (cold) | first build of 3.6.3 | 2213 / 2213 | everything |
+| One-file patch (the CI case) | one real declaration added to `crypto/mem.c`, via `.overridePhase1Attrs`'s `postPatch` | 2 / 2213 (`tu-libcrypto-lib-mem.o`, `tu-libcrypto-shlib-mem.o`) | 13 — the 7 engine `.so`s, `bin-libssl.so.3`/`bin-libcrypto.so.3`/`bin-openssl` that link the changed object, plus the outer wrapper drvs |
+| Version bump (3.6.3 → 3.5.7) | full release bump, same package | 2153 / 2192 (98%) | effectively everything |
 
 The one-file-patch case is the realistic CI scenario this project
-targets: a security patch or small bugfix lands on an unchanged
-release, and only the 2 touched translation units — out of 2213 total
-— need to actually run a compiler; everything else is a build-trace
-cache hit. The 13 non-TU drvs that DO rebuild (the shared libs/
-binaries that link against the changed object, plus the wrapper drvs)
-are expected to — real, correct propagation of a real content change,
-verified by diffing the exact set of drv hashes actually built in each
-run (no overlap: nothing in the patched run re-does work the baseline
-run had already done, and nothing that should be invalidated survives
-untouched). An earlier pass at this measurement patched in only a
-comment line; GCC emits nothing for a comment, so the resulting `.o`
-was byte-for-byte identical to the unpatched one via `nix path-info`
-and the whole test measured nothing — fixed by adding a real
-file-scope declaration instead. The version-bump case is the negative
-result: openssl's own `Configure` step bakes its version number into
-`opensslv.h`, a header nearly every `.c` file transitively includes, so
-almost nothing survives a release bump byte-for-byte even though most
-of the source is unchanged text. Per-TU content addressing can't
-distinguish "this file's content changed because of a real edit" from
-"this file's content changed because something it includes changed" —
-both invalidate the cache, so the *win size* depends entirely on how
-narrow the actual diff's *object-level* footprint is, not how many
-lines of source changed.
-survives a release bump byte-for-byte even though most of the source
-is unchanged text. Per-TU content addressing can't distinguish "this
-file's content changed because of a real edit" from "this file's
-content changed because something it includes changed" — both
-invalidate the cache, so the *win size* depends entirely on how narrow
-the actual diff's *object-level* footprint is, not how many lines of
-source changed.
+targets: a security patch or small bugfix on an unchanged release only
+needs a compiler for the 2 touched TUs out of 2213; everything else is
+a build-trace cache hit. The 13 non-TU drvs that DO rebuild are real,
+correct propagation of a real content change — verified by diffing the
+exact drv hashes actually built in each run (zero overlap between the
+baseline and patched runs' "actually built" sets). An earlier attempt
+patched in only a comment line; GCC emits nothing for a comment, so
+the `.o` was byte-identical to the unpatched one and the test measured
+nothing — fixed by adding a real declaration instead.
+
+The version-bump row is the negative result: openssl's own `Configure`
+bakes its version number into `opensslv.h`, a header nearly every `.c`
+file transitively includes, so almost nothing survives a release bump
+byte-for-byte even though most source is unchanged text. Per-TU
+content addressing can't distinguish "this file changed" from
+"something it includes changed" — both invalidate the cache, so the
+win size depends on the diff's *object-level* footprint, not its line
+count.
 
 See `~/nixgg-example`'s `flake.nix` (a separate flake using this repo
 as a library, not part of this repository) for the three openssl
 variants these numbers came from: `openssl-dyndrv`,
-`openssl-3-5-dyndrv`, and `openssl-dyndrv-patched`.
+`openssl-3-5-dyndrv`, and `openssl-dyndrv-patched`. Its own
+`tests/measure-incremental-rebuild.sh` automates the one-file-patch
+row against openssl specifically, but lives outside this repo and its
+CI. [tests/perf-regression.sh](tests/perf-regression.sh) automates the
+same property in-repo, on a cheap fixture (lua, 34 TUs) that runs on
+every push/PR: edit one `.c` file, assert exactly its own translation
+unit recompiles and all 33 others stay cache hits. The binary
+same-path/different-path cutoff checks above can't tell "2 TUs
+rebuilt" apart from "every TU rebuilt" — this can.
 
 ## Cache an existing package's configure step
 
@@ -513,15 +515,13 @@ above), build (sandboxed, real per-TU shim acceleration — same as
 `dynDrvStdenv`'s own install group). An edit to a file configure
 never reads skips configure entirely; an edit to a source file only
 recompiles that file's own dynamic derivation. Tested against `hello`
-(autotools, with `configureSrcFilter`) and `zstd` (cmake, 4 outputs,
-real `ctest` checkPhase, and the `gen_html` mid-build-exec fix from
-above — here it has to patch both the configure group and the build
-group, since cmake's Makefile generation happens in the former and
-the latter never reconfigures). See
-[.#hello-dyndrv-configure-cached](flake.nix),
-[.#zstd-dyndrv-configure-cached](flake.nix), and
-[WIP-dynDrvConfigureCacheStdenv.md](WIP-dynDrvConfigureCacheStdenv.md)
-for details.
+(autotools, with `configureSrcFilter`), `zstd` (cmake, 4 outputs, real
+`ctest` checkPhase, and the `gen_html` mid-build-exec fix — patched on
+both the configure and build group, since cmake's Makefile generation
+happens in the former), and `gdbm` (autotools, 5 outputs, covering
+multi-output + `configureSrcFilter` together). See
+[.#hello-dyndrv-configure-cached](flake.nix) and
+[.#zstd-dyndrv-configure-cached](flake.nix) in `flake.nix`.
 
 ## Architecture
 
@@ -531,7 +531,6 @@ mechanics. See [dyn-drv/NOTES.md](dyn-drv/NOTES.md) for the
 sandbox / dynamic-derivation exploration notes.
 
 ## Requirements
-
 
 - Nix ≥ 2.36 for sandbox mode (needs `builder-rpc-v0` + `nix store
   submit-output`, both merged into NixOS/nix master via
