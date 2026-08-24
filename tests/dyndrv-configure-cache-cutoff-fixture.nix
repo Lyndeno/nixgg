@@ -11,8 +11,7 @@
 # `package` selects which fixture package to build — "hello"
 # (single-output) or "gdbm" (multi-output: out/dev/info/lib/man,
 # AC_CONFIG_SRCDIR = src/gdbmdefs.h) — so the same cutoff mechanics get
-# exercised against the untested multi-output+filter combination
-# WIP-dynDrvConfigureCacheStdenv.md's "Deferred" section flagged.
+# exercised against both single- and multi-output+filter combinations.
 {
   flakeDir, # path to the nixgg checkout, passed by the driver script
   edit ? null, # null | "excluded" | "included"

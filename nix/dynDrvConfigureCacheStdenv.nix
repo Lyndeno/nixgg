@@ -243,19 +243,17 @@ stdenv0.override (
                 name = "${outerName}.drv"; # submit-output requires this
                                             # to match outputPathName(outerName, "out")
                 # Group B always runs its OWN real unpack+patch
-                # against the REAL, unfiltered src (same lesson
-                # configureCacheStdenv's own history worked out —
-                # see WIP-configureCacheStdenv.md's Gotcha #6): when
-                # configureSrcFilter is set, group A's snapshot only
-                # has the filtered subset, so buildPhase needs the
-                # full real tree present before overlaying group A's
-                # configure output on top. A hardcoded phases string
-                # (rather than dontConfigure toggles) is needed here
-                # to splice ggRestorePhase in between patchPhase and
-                # buildPhase — same reasoning as dynDrvStdenv's own
-                # phase 2 (checkPhase/installPhase use their own
-                # custom-phase insertion for the same structural
-                # reason).
+                # against the REAL, unfiltered src, unconditionally:
+                # when configureSrcFilter is set, group A's snapshot
+                # only has the filtered subset, so buildPhase needs
+                # the full real tree present before overlaying group
+                # A's configure output on top. A hardcoded phases
+                # string (rather than dontConfigure toggles) is
+                # needed here to splice ggRestorePhase in between
+                # patchPhase and buildPhase — same reasoning as
+                # dynDrvStdenv's own phase 2 (checkPhase/installPhase
+                # use their own custom-phase insertion for the same
+                # structural reason).
                 phases = "unpackPhase patchPhase ggRestorePhase buildPhase";
                 doCheck = false;
                 dontInstall = true;

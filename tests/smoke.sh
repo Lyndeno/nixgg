@@ -110,9 +110,8 @@ DYNDRV=(
 # real early-cutoff win (shrinking group A's own `src` input so an
 # edit outside the filtered set never re-runs configure) — this smoke
 # test only covers "does it still build and run correctly", not the
-# caching behavior itself (verified manually via `nix
-# show-derivation`/`nix path-info` comparisons — see
-# WIP-configureCacheStdenv.md).
+# caching behavior itself. See tests/configure-cache-cutoff.sh for the
+# automated check of the caching mechanism itself.
 CONFIGCACHE=(
   "hello-cache|bin/hello|%s"
   "zstd-cache|bin/zstd|%s --version"
