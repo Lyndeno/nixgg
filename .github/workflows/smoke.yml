@@ -55,6 +55,17 @@ jobs:
       - name: Run dyndrv-configure-cache-cutoff test
         run: PATCHED_NIX="$PWD/.patched-nix" bash tests/dyndrv-configure-cache-cutoff.sh
 
+      # Turns the README's one-off, by-hand openssl measurement
+      # ("2/2213 TUs rebuild on a one-file patch") into an automated
+      # count on a cheap fixture (lua, 34 TUs): edit one .c file,
+      # assert exactly its own TU recompiles and every other TU stays
+      # a cache hit. configure-cache-cutoff.sh/dyndrv-*'s cutoff checks
+      # can't catch a regression that widens the invalidation blast
+      # radius while still changing the outer group's output path —
+      # this can.
+      - name: Run per-TU rebuild-scope test
+        run: PATCHED_NIX="$PWD/.patched-nix" bash tests/perf-regression.sh
+
   drv-equivalence:
     runs-on: ubuntu-latest
     # ONLY=hello is ~35s of build time; generous headroom for a
