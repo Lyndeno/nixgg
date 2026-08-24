@@ -457,13 +457,12 @@
                 };
               };
             # gdbm through the combined mechanism, WITH
-            # configureSrcFilter: the untested combination
-            # WIP-dynDrvConfigureCacheStdenv.md's "Deferred" section
-            # flagged (hello only covered single-output+filter,
-            # zstd only covered multi-output+no-filter). gdbm is
-            # autotools, plain configure (no autoreconfHook), and
-            # multi-output (out/dev/info/lib/man) — its own
-            # AC_CONFIG_SRCDIR argument is src/gdbmdefs.h.
+            # configureSrcFilter: covers multi-output+filter together
+            # (hello alone only covers single-output+filter, zstd
+            # only multi-output+no-filter). gdbm is autotools, plain
+            # configure (no autoreconfHook), and multi-output
+            # (out/dev/info/lib/man) — its own AC_CONFIG_SRCDIR
+            # argument is src/gdbmdefs.h.
             gdbm-dyndrv-configure-cached = pkgs.gdbm.override {
               stdenv = dynDrvConfigureCacheStdenv {
                 stdenv = pkgs.stdenv;
@@ -688,7 +687,26 @@
               : "''${NIXGG_AUTOFORCE:=1}"
               export NIXGG_AUTOFORCE
 
-              echo "nixgg shell — 'nixgg --help', 'cc -v', 'which make'" >&2
+              # Sandbox mode's own `nix` (below) must be the patched
+              # build, not whatever's on the ambient PATH — an
+              # unpatched Nix fails opaquely (`attribute 'outputOf'
+              # missing` at eval, or "Submit outputs for a currently
+              # running derivation not supported by store 'local'"
+              # mid-build if outputOf itself resolves but
+              # submit-output doesn't exist). Put it first on PATH so
+              # every `nix build .#hello`-style invocation in this
+              # shell automatically uses it — see README.md's
+              # "Invoking sandbox mode explicitly" for what each piece
+              # below is for.
+              echo "nixgg shell: prepending patched Nix and pointing NIX_CONFIG at an alt store — see README.md's 'Invoking sandbox mode explicitly'" >&2
+              export PATH="${pkgs'."patched-nix"}/bin:$PATH"
+              export NIX_CONFIG="
+              extra-experimental-features = ca-derivations dynamic-derivations configurable-impure-env
+              extra-system-features = builder-rpc-v0
+              store = ''${NIXGG_STORE}
+              "
+
+              echo "nixgg shell — 'nixgg --help', 'cc -v', 'which make', 'nix build .#hello'" >&2
             '';
           };
         in
