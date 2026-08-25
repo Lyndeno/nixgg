@@ -112,6 +112,22 @@
             (nix-15793.packages.${system}.nix-cli
               or nix-15793.packages.${system}.default);
 
+          # libstore-c / libutil-c from the SAME pinned nix-15793 build —
+          # C API for talking to the daemon (nix_derivation_from_json,
+          # nix_add_derivation, ...) without shelling out to the `nix`
+          # CLI per call. nixpkgs' packaging splits every Nix component
+          # into its own derivation with real dev/out/debug outputs
+          # (confirmed: nix-store-c and nix-util-c are both directly
+          # exposed flake outputs, no rebuild needed), unlike the
+          # `nix`/`nix-cli` package above which bundles everything and
+          # exposes no headers. Exists to let a future cgo-bound nixgg
+          # binary link against libnixstorec.so/libnixutilc.so instead
+          # of fork+exec'ing `nix derivation add`/`nix store add --scan`
+          # per translation unit — see the per-invocation RPC-tax
+          # analysis in ARCHITECTURE.md's "What we don't (yet) do".
+          nixStoreC = nix-15793.packages.${system}.nix-store-c;
+          nixUtilC = nix-15793.packages.${system}.nix-util-c;
+
           # The nix/ helper directory (builder.nix, linker.nix,
           # archiver.nix, pure-store-path.nix) imported into the store
           # once so drivers can `import` them by absolute store path
@@ -611,6 +627,8 @@
           mosh-env = moshEnv;
           fmt-env = fmtEnv;
           patched-nix = patchedNix;
+          nix-store-c = nixStoreC;
+          nix-util-c = nixUtilC;
           nixgg-bin = nixggBin;
           # mkNixggBuild is a function; expose so consumers can build
           # their own targets in downstream flakes.

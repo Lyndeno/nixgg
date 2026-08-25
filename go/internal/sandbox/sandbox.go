@@ -16,8 +16,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/aterm"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/rpc"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
 )
 
@@ -26,13 +28,60 @@ func Enabled() bool {
 	return os.Getenv("NIXGG_SANDBOX") == "1"
 }
 
+// rpcEnabled reports whether the raw worker-protocol client
+// (internal/rpc) should be used in place of fork+exec'ing the `nix`
+// CLI for ops that have a verified RPC implementation. Opt-in until
+// StoreAddScan's NAR-encoder counterpart lands and the whole sandbox
+// path has been verified end-to-end against real multi-TU builds —
+// SubmitOutput and DerivationAdd are both affected by this flag
+// today. See ARCHITECTURE.md's "What we don't (yet) do" for why
+// per-call fork+exec is worth avoiding here.
+func rpcEnabled() bool {
+	return os.Getenv("NIXGG_RPC") == "1"
+}
+
+// dialRPC connects to the daemon socket the sandbox already exposes
+// via NIX_REMOTE (unix://<path> — see internal/rpc.Dial's own
+// docstring for why this is always the sandbox's own .nix-socket,
+// never a real daemon reachable another way).
+func dialRPC() (*rpc.Conn, error) {
+	remote := os.Getenv("NIX_REMOTE")
+	if remote == "" {
+		return nil, fmt.Errorf("NIX_REMOTE not set; not running inside a builder-rpc-v0 sandbox")
+	}
+	return rpc.Dial(remote)
+}
+
 // DerivationAdd pipes a JSON drv description to `nix derivation add`
 // and returns the resulting drv store path. --offline: nix should
 // have zero business contacting substituters for a `derivation add`
 // (it's registering a drv description, not resolving inputs), but
 // under some sandbox configurations it tries anyway and stalls on
 // name-resolution failures. Cheap paranoia.
+//
+// Under NIXGG_RPC=1, renders the same ATerm bytes via internal/aterm
+// and uploads them over internal/rpc's AddToStore op instead of
+// fork+exec'ing `nix derivation add` — the highest-volume of the
+// three sandbox ops (one call per compile TU, versus once per
+// archive/link and once total for submit-output), so this is where
+// ARCHITECTURE.md's "What we don't (yet) do" fork+exec-tax measurement
+// (~44-90ms/call) actually adds up across a many-TU build.
 func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
+	if rpcEnabled() {
+		conn, err := dialRPC()
+		if err != nil {
+			return "", fmt.Errorf("rpc derivation add: %w", err)
+		}
+		defer conn.Close()
+		name := drv.Name + ".drv"
+		contents := aterm.Unparse(drv)
+		refs := aterm.References(drv)
+		path, err := conn.AddDerivation(name, []byte(contents), refs)
+		if err != nil {
+			return "", fmt.Errorf("rpc derivation add %s: %w", drv.Name, err)
+		}
+		return path, nil
+	}
 	body, err := json.Marshal(drv)
 	if err != nil {
 		return "", fmt.Errorf("encode drv json: %w", err)
@@ -88,7 +137,23 @@ func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 // the .drv file isn't materialised on disk, so the caller must
 // capture bytes at submission time. See nix-ninja
 // crates/nix-builder-rpc-client for the daemon-RPC approach.
+//
+// Under NIXGG_RPC=1, calls internal/rpc directly over the sandbox's
+// own daemon socket instead of fork+exec'ing `nix store
+// submit-output` — see internal/rpc's own docs for the wire protocol
+// this replicates (WorkerProto::Op::SubmitOutput, opcode 1000).
 func SubmitOutput(cfg *toolchain.Config, drvPath, outputName string) error {
+	if rpcEnabled() {
+		conn, err := dialRPC()
+		if err != nil {
+			return fmt.Errorf("rpc submit-output: %w", err)
+		}
+		defer conn.Close()
+		if err := conn.SubmitOutput(drvPath, outputName); err != nil {
+			return fmt.Errorf("rpc submit-output %s %s: %w", drvPath, outputName, err)
+		}
+		return nil
+	}
 	cmd := exec.Command(cfg.Nix, "--offline", "store", "submit-output", drvPath, outputName)
 	cmd.Env = os.Environ()
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr

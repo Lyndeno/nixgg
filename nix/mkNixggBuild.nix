@@ -210,7 +210,6 @@ let
       NIXGG_STORE          = "auto";
       NIXGG_SANDBOX        = "1";
       NIXGG_SANDBOX_TARGET = target;
-
       # See scrubWrapperEnv above for what this does and why. Two points
       # specific to the sandbox side: the shims/ dir goes ahead of the
       # toolchain stdenv already put on PATH so cc/c++/ar dispatch through

@@ -220,7 +220,9 @@ type JSONDrv struct {
 
 // JSONDrvInputs holds the two input slots Nix distinguishes.
 type JSONDrvInputs struct {
-	// Drvs maps a drv store path (full /nix/store/…-…drv path) to the
+	// Drvs maps a drv's store-path BASENAME (not a full path — same
+	// convention as Srcs below; confirmed against derivation.go's own
+	// toJSON, which populates this via StoreBasename(in.Ref)) to the
 	// set of outputs of that drv we depend on.
 	Drvs map[string]JSONDrvRef `json:"drvs"`
 	// Srcs is a list of already-realised store objects the sandbox
