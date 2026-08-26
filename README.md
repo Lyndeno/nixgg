@@ -530,6 +530,41 @@ Every shim writes a derivation. Nix does the rest. See
 mechanics. See [dyn-drv/NOTES.md](dyn-drv/NOTES.md) for the
 sandbox / dynamic-derivation exploration notes.
 
+### Talking to the daemon directly instead of shelling out
+
+Worth exploring if you're picking at where sandbox mode's time goes:
+every shim call in sandbox mode used to fork+exec the `nix` CLI once
+per operation (`nix derivation add`, `nix store add --scan`, `nix
+store submit-output`) — cheap in isolation (~20-90ms), but it adds up
+linearly with translation-unit count on a warm rebuild, where real
+compiler time isn't the bottleneck anymore.
+
+The Nix C API (`libnixstorec`/`libnixutilc`, pinned in this flake as
+`.#nix-store-c`/`.#nix-util-c`) only reaches one of the three calls —
+`builder-rpc-v0`'s `SubmitOutput` and `AddToStoreScanning` ops have no
+C binding at all. The alternative nixgg landed on instead:
+`internal/rpc` speaks the Nix worker protocol directly over the
+sandbox's own daemon socket (the same `NIX_REMOTE=unix://…` the CLI
+would've connected to anyway), with `internal/aterm` and
+`internal/nar` rendering the exact bytes `nix derivation add`/`nix
+store add --scan` compute internally — read directly out of the
+pinned Nix source and verified byte-for-byte against real output
+before being wired in.
+
+Measured on lua (34 TUs), isolating shim-pass overhead from real
+compile time (single-file edit, warm store, substituters off, 5 runs
+averaged each way): **~1.46s with the RPC path vs. ~2.83s via the CLI
+fallback — roughly 48% faster.** The win scales with TU count and
+rebuild frequency, not with compiler time, so it matters most on
+exactly the workload per-TU acceleration targets — a large project's
+edit/rebuild loop — and nearly vanishes on a cold build, where real
+`g++` invocations dominate either way.
+
+On by default (`NIXGG_RPC=1` in every sandbox mechanism's env block);
+`NIXGG_RPC=0` falls back to the CLI path if something unforeseen turns
+up. `tests/drv-equivalence.sh`'s full sweep (149 drvs) and
+`tests/smoke.sh EXAMPLES=all` both pass with it on.
+
 ## Requirements
 
 - Nix ≥ 2.36 for sandbox mode (needs `builder-rpc-v0` + `nix store
