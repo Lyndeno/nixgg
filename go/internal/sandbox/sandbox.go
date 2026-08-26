@@ -19,6 +19,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/aterm"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/nar"
 	"github.com/tbereknyei/nixgg/internal/rpc"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
 )
@@ -30,11 +31,12 @@ func Enabled() bool {
 
 // rpcEnabled reports whether the raw worker-protocol client
 // (internal/rpc) should be used in place of fork+exec'ing the `nix`
-// CLI for ops that have a verified RPC implementation. Opt-in until
-// StoreAddScan's NAR-encoder counterpart lands and the whole sandbox
-// path has been verified end-to-end against real multi-TU builds —
-// SubmitOutput and DerivationAdd are both affected by this flag
-// today. See ARCHITECTURE.md's "What we don't (yet) do" for why
+// CLI for the three sandbox ops nixgg makes per build (DerivationAdd,
+// StoreAddScan, SubmitOutput). Opt-in pending a default-on decision —
+// all three are wired and individually verified against real sandbox
+// builds (drv-equivalence + smoke.sh's full quick set), but haven't
+// yet run together end-to-end with StoreAddScan also on the RPC
+// path. See ARCHITECTURE.md's "What we don't (yet) do" for why
 // per-call fork+exec is worth avoiding here.
 func rpcEnabled() bool {
 	return os.Getenv("NIXGG_RPC") == "1"
@@ -107,7 +109,29 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // daemon scan the tree for references to already-present store
 // objects and record them — required inside a sandbox where
 // unregistered references cause build-time errors.
+//
+// Under NIXGG_RPC=1, encodes path as a NAR via internal/nar and
+// uploads it over internal/rpc's AddToStoreScanning op (opcode 1001)
+// instead of fork+exec'ing `nix store add --scan` — the second-
+// highest-volume of the three sandbox ops (one call per compile TU,
+// same as DerivationAdd).
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
+	if rpcEnabled() {
+		conn, err := dialRPC()
+		if err != nil {
+			return "", fmt.Errorf("rpc store add --scan: %w", err)
+		}
+		defer conn.Close()
+		var buf bytes.Buffer
+		if err := nar.Dump(&buf, path); err != nil {
+			return "", fmt.Errorf("rpc store add --scan %s: encode NAR: %w", path, err)
+		}
+		sp, err := conn.AddToStoreScanning(name, buf.Bytes())
+		if err != nil {
+			return "", fmt.Errorf("rpc store add --scan %s: %w", path, err)
+		}
+		return sp, nil
+	}
 	cmd := exec.Command(cfg.Nix, "--offline", "store", "add", "--scan", "-n", name, path)
 	cmd.Env = os.Environ()
 	var stderr bytes.Buffer

@@ -116,6 +116,12 @@ let
     export NIXGG_SYSTEM="${system}"
     export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
+    # Raw worker-protocol client for the sandbox's own daemon socket
+    # (internal/rpc) instead of per-call fork+exec — see
+    # mkNixggBuild.nix's own comment on this same var for the
+    # verification this default rests on. NIXGG_RPC=0 is the escape
+    # hatch back to the CLI fallback.
+    export NIXGG_RPC=1
     export NIX_CONFIG="extra-experimental-features = nix-command ca-derivations dynamic-derivations"
   '';
 

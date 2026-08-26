@@ -210,6 +210,15 @@ let
       NIXGG_STORE          = "auto";
       NIXGG_SANDBOX        = "1";
       NIXGG_SANDBOX_TARGET = target;
+      # Raw worker-protocol client for the sandbox's own daemon socket
+      # (internal/rpc), replacing per-call fork+exec of `nix
+      # derivation add`/`nix store add --scan`/`nix store
+      # submit-output`. Verified byte-identical drv hashes across the
+      # full tests/drv-equivalence.sh sweep (149/149) and every
+      # tests/smoke.sh example (including EXAMPLES=all's redis/ffmpeg/
+      # llvm). NIXGG_RPC=0 is the escape hatch back to the CLI
+      # fallback if something unforeseen turns up.
+      NIXGG_RPC            = "1";
       # See scrubWrapperEnv above for what this does and why. Two points
       # specific to the sandbox side: the shims/ dir goes ahead of the
       # toolchain stdenv already put on PATH so cc/c++/ar dispatch through
