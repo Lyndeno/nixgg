@@ -127,6 +127,14 @@ but stay on `builder-rpc-v0` like nix-ninja. Confirmed working via
 `dyn-json-drv.nix`. No need to write ATerm bytes or Rust
 wire-protocol code — the CLI handles both.
 
+**Superseded** (see `go/internal/rpc` + `go/internal/aterm` +
+`go/internal/nar`): the fork+exec cost of shelling out per shim call
+turned out to matter enough in practice (ARCHITECTURE.md's
+"Performance snapshots") to justify writing the ATerm/NAR encoders and
+a Go worker-protocol client after all — closer to nix-ninja's own
+approach than the note above expected to need. `nix derivation add`'s
+JSON-add codepath is still used as the CLI fallback (`NIXGG_RPC=0`).
+
 ## What comes next
 
 The nixgg shims already have all the information a JSON drv needs:

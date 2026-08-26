@@ -458,11 +458,12 @@ Warm rebuild of lua after edit is 1.8s (mostly the shim pass + one
   recursive make, stdenv-plumbed openssl/ncurses/zlib/protobuf, one
   drv per TU submitted through the daemon.
 
-Warm is currently slow-ish because the shim redoes the JSON drv
-construction every time. Nix's own eval cache short-circuits the
-actual builds — the same drv-hash → cache hit — but we're paying
-`fork+exec nix derivation add` × ~35 per rebuild. A per-project drv
-cache (mtime-based) would drop this to sub-second.
+Warm rebuilds pay the shim pass every time (JSON drv construction is
+cheap; Nix's own eval cache short-circuits the actual builds via the
+same drv-hash → cache hit). Prior to `internal/rpc`, each shim call
+additionally paid `fork+exec nix derivation add`/`nix store add
+--scan`/`nix store submit-output` (~20-90ms/call depending on load —
+see "What we don't (yet) do", now resolved below).
 
 ## Correctness properties
 
@@ -484,25 +485,28 @@ cache (mtime-based) would drop this to sub-second.
 
 ## What we don't (yet) do
 
-- **Warm-path drv memoization** for sandbox mode. Every rebuild
-  re-runs the shim pass and pipes each JSON drv through `nix
-  derivation add`. Same drv-hash → same store path via Nix's eval
-  cache, so no wasted builds, but the fork+exec overhead accumulates
-  on projects with many TUs. Measured at ~44-90ms per call, so a
-  few-hundred-TU build spends tens of seconds here.
+- ~~Warm-path drv memoization for sandbox mode~~ — **resolved**.
+  `internal/rpc` speaks the Nix worker protocol directly over the
+  sandbox's own daemon socket (`NIX_REMOTE`), replacing the fork+exec
+  of `nix derivation add`/`nix store add --scan`/`nix store
+  submit-output` with one persistent connection per shim invocation.
+  `internal/aterm` renders the same ATerm derivation text `nix
+  derivation add` computes internally (from the existing
+  `expr.JSONDrv`), and `internal/nar` encodes a directory into NAR
+  format for the scan-upload op — both read directly out of the
+  pinned Nix source and verified byte-exact against real output
+  before being wired in. On by default (`NIXGG_RPC=1` in every
+  sandbox mechanism's env block); `NIXGG_RPC=0` falls back to the CLI
+  path.
 
-  **The obvious fix does not work.** A file cache under `.nixgg/`
-  keyed on the thunk id (already a content hash) looks like the
-  answer, but sandbox-mode shims run inside a *fresh, ephemeral*
-  builder-rpc-v0 sandbox per top-level `nix build`: `mkNixggBuild`
-  mounts no persistent host path (no `sandboxPaths`), `dontUnpack =
-  false` re-unpacks `src` every build, and `paths.Resolve` anchors
-  `.nixgg/` at `$PWD` — which inside the sandbox is the throwaway
-  build dir. Anything the shim writes is discarded before the next
-  `nix build` could read it, and the next build is exactly where the
-  amortization would have to happen. Making it work needs a
-  bind-mounted stable host cache dir plus a story for sandbox
-  isolation and build concurrency — a different, much larger change.
+  The file-cache idea this section used to propose (`.nixgg/` keyed on
+  thunk id, to avoid *repeating* fork+exec calls across rebuilds) is
+  moot now — the cost it was trying to amortize (fork+exec itself, not
+  just its repetition) is gone. The sandbox-per-build ephemerality
+  argument that killed the file-cache idea (no persistent host path,
+  `dontUnpack = false`, `.nixgg/` anchored inside the throwaway build
+  dir) still holds and would still block a *future* cross-build cache,
+  but there's no longer a reason to want one for this specific cost.
 
 - **Link/archive lines beyond ~1700 inputs.** Every input is rendered
   into one space-separated string that becomes the single `bash -c`
@@ -544,13 +548,13 @@ cache (mtime-based) would drop this to sub-second.
   to `tests/drv-equivalence.sh` — no current fixture comes close.
   Don't re-propose the file cache on its own.
 
-  Batching via the raw Nix worker protocol (to avoid per-call
-  fork+exec entirely) is also a dead end for now: `nix derivation
-  add` has no batch mode (two concatenated JSON docs fail to parse),
-  and `dyn-drv/NOTES.md` already rejected writing a raw-protocol
-  client in favour of shelling out to the CLI. It would duplicate
-  nix-ninja's Rust worker-protocol client for an unproven benefit,
-  and cold-build cost is bounded by real compiler work anyway.
+  Batching multiple inputs into one raw-protocol call wouldn't help
+  here either: `nix derivation add` has no batch mode (two
+  concatenated JSON docs fail to parse), and the argv-length ceiling
+  is about the *rendered script text* of one link/archive step, not
+  the number of daemon round trips — `internal/rpc` (added for the
+  unrelated fork+exec-cost problem above) sends one op per
+  derivation either way, same as the CLI did.
 
 - **Multi-target dyn-drv builds**. `mkNixggBuild` submits exactly
   one final drv. Projects with multiple binaries (lua's lua + luac,
