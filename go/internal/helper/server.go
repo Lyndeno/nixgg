@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+
+	"github.com/tbereknyei/nixgg/internal/rpc"
 )
 
 // Server is the helper process itself: listens on a local Unix
@@ -82,41 +84,40 @@ func (s *Server) handleOne(c net.Conn) {
 }
 
 func (s *Server) dispatch(req *request) response {
+	switch req.Op {
+	case "AddDerivation":
+		return s.withConn(func(conn *rpc.Conn) (response, error) {
+			path, err := conn.AddDerivation(req.Name, req.Contents, req.Refs)
+			return response{StorePath: path}, err
+		})
+	case "AddToStoreScanning":
+		return s.withConn(func(conn *rpc.Conn) (response, error) {
+			path, err := conn.AddToStoreScanning(req.Name, req.NarDump)
+			return response{StorePath: path}, err
+		})
+	case "SubmitOutput":
+		return s.withConn(func(conn *rpc.Conn) (response, error) {
+			return response{}, conn.SubmitOutput(req.DrvPath, req.Output)
+		})
+	default:
+		return response{Err: fmt.Sprintf("helper: unknown op %q", req.Op)}
+	}
+}
+
+// withConn checks out a pooled connection, runs op on it, and
+// Puts/Drops the connection based on whether op's error indicates the
+// connection's wire state is still trustworthy — the same
+// Get/call/Put-or-Drop shape all three ops shared before this existed.
+func (s *Server) withConn(op func(*rpc.Conn) (response, error)) response {
 	conn, err := s.pool.Get()
 	if err != nil {
 		return response{Err: err.Error()}
 	}
-
-	switch req.Op {
-	case "AddDerivation":
-		path, err := conn.AddDerivation(req.Name, req.Contents, req.Refs)
-		if err != nil {
-			s.pool.Drop(conn)
-			return response{Err: err.Error()}
-		}
-		s.pool.Put(conn)
-		return response{StorePath: path}
-
-	case "AddToStoreScanning":
-		path, err := conn.AddToStoreScanning(req.Name, req.NarDump)
-		if err != nil {
-			s.pool.Drop(conn)
-			return response{Err: err.Error()}
-		}
-		s.pool.Put(conn)
-		return response{StorePath: path}
-
-	case "SubmitOutput":
-		err := conn.SubmitOutput(req.DrvPath, req.Output)
-		if err != nil {
-			s.pool.Drop(conn)
-			return response{Err: err.Error()}
-		}
-		s.pool.Put(conn)
-		return response{}
-
-	default:
-		s.pool.Put(conn) // never touched; op was rejected before any daemon call
-		return response{Err: fmt.Sprintf("helper: unknown op %q", req.Op)}
+	resp, err := op(conn)
+	if err != nil {
+		s.pool.Drop(conn)
+		return response{Err: err.Error()}
 	}
+	s.pool.Put(conn)
+	return resp
 }

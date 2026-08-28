@@ -67,6 +67,58 @@ func dialRPC() (*rpc.Conn, error) {
 	return rpc.Dial(remote)
 }
 
+// rpcBackend is satisfied by both *rpc.Conn (NIXGG_RPC=1, a fresh dial
+// per call) and helperBackend (NIXGG_RPC_HELPER=<socket>, relayed
+// through the pooled daemon-side helper) — the two ways nixgg speaks
+// the raw worker protocol instead of fork+exec'ing the nix CLI.
+// Letting DerivationAdd/StoreAddScan/SubmitOutput each pick one via
+// selectBackend collapses what used to be three near-identical
+// helper/rpc/CLI branches per function into one selection plus one
+// CLI fallback.
+type rpcBackend interface {
+	AddDerivation(name string, contents []byte, refs []string) (string, error)
+	AddToStoreScanning(name string, narDump []byte) (string, error)
+	SubmitOutput(drvPath, output string) error
+}
+
+// helperBackend adapts internal/helper's package-level client
+// functions (each a one-shot dial to the helper's socket) to
+// rpcBackend.
+type helperBackend string // socket path
+
+func (h helperBackend) AddDerivation(name string, contents []byte, refs []string) (string, error) {
+	return helper.AddDerivation(string(h), name, contents, refs)
+}
+
+func (h helperBackend) AddToStoreScanning(name string, narDump []byte) (string, error) {
+	return helper.AddToStoreScanning(string(h), name, narDump)
+}
+
+func (h helperBackend) SubmitOutput(drvPath, output string) error {
+	return helper.SubmitOutput(string(h), drvPath, output)
+}
+
+// selectBackend picks which raw-protocol path a call should use, if
+// any. Helper is checked before direct dial — a helper socket implies
+// the RPC path is wanted without also requiring NIXGG_RPC=1 to be set
+// redundantly (see helperSocket's own docstring). ok=false (with a nil
+// error) means neither is enabled and the caller should fall back to
+// the CLI; the returned close func is always non-nil when ok is true
+// and must be called once the backend is no longer needed.
+func selectBackend() (b rpcBackend, close func(), ok bool, err error) {
+	if sock := helperSocket(); sock != "" {
+		return helperBackend(sock), func() {}, true, nil
+	}
+	if rpcEnabled() {
+		conn, err := dialRPC()
+		if err != nil {
+			return nil, nil, false, err
+		}
+		return conn, func() { conn.Close() }, true, nil
+	}
+	return nil, nil, false, nil
+}
+
 // DerivationAdd pipes a JSON drv description to `nix derivation add`
 // and returns the resulting drv store path. --offline: nix should
 // have zero business contacting substituters for a `derivation add`
@@ -90,24 +142,13 @@ func dialRPC() (*rpc.Conn, error) {
 // helper socket doesn't also require NIXGG_RPC=1 to be set.
 func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 	name := drv.Name + ".drv"
-	if sock := helperSocket(); sock != "" {
+	if b, closeB, ok, err := selectBackend(); err != nil {
+		return "", fmt.Errorf("rpc derivation add: %w", err)
+	} else if ok {
+		defer closeB()
 		contents := aterm.Unparse(drv)
 		refs := aterm.References(drv)
-		path, err := helper.AddDerivation(sock, name, []byte(contents), refs)
-		if err != nil {
-			return "", fmt.Errorf("helper derivation add %s: %w", drv.Name, err)
-		}
-		return path, nil
-	}
-	if rpcEnabled() {
-		conn, err := dialRPC()
-		if err != nil {
-			return "", fmt.Errorf("rpc derivation add: %w", err)
-		}
-		defer conn.Close()
-		contents := aterm.Unparse(drv)
-		refs := aterm.References(drv)
-		path, err := conn.AddDerivation(name, []byte(contents), refs)
+		path, err := b.AddDerivation(name, []byte(contents), refs)
 		if err != nil {
 			return "", fmt.Errorf("rpc derivation add %s: %w", drv.Name, err)
 		}
@@ -148,28 +189,15 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
 // instead — see DerivationAdd's own docstring for why.
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
-	if sock := helperSocket(); sock != "" {
-		var buf bytes.Buffer
-		if err := nar.Dump(&buf, path); err != nil {
-			return "", fmt.Errorf("helper store add --scan %s: encode NAR: %w", path, err)
-		}
-		sp, err := helper.AddToStoreScanning(sock, name, buf.Bytes())
-		if err != nil {
-			return "", fmt.Errorf("helper store add --scan %s: %w", path, err)
-		}
-		return sp, nil
-	}
-	if rpcEnabled() {
-		conn, err := dialRPC()
-		if err != nil {
-			return "", fmt.Errorf("rpc store add --scan: %w", err)
-		}
-		defer conn.Close()
+	if b, closeB, ok, err := selectBackend(); err != nil {
+		return "", fmt.Errorf("rpc store add --scan: %w", err)
+	} else if ok {
+		defer closeB()
 		var buf bytes.Buffer
 		if err := nar.Dump(&buf, path); err != nil {
 			return "", fmt.Errorf("rpc store add --scan %s: encode NAR: %w", path, err)
 		}
-		sp, err := conn.AddToStoreScanning(name, buf.Bytes())
+		sp, err := b.AddToStoreScanning(name, buf.Bytes())
 		if err != nil {
 			return "", fmt.Errorf("rpc store add --scan %s: %w", path, err)
 		}
@@ -213,19 +241,11 @@ func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 // Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
 // instead — see DerivationAdd's own docstring for why.
 func SubmitOutput(cfg *toolchain.Config, drvPath, outputName string) error {
-	if sock := helperSocket(); sock != "" {
-		if err := helper.SubmitOutput(sock, drvPath, outputName); err != nil {
-			return fmt.Errorf("helper submit-output %s %s: %w", drvPath, outputName, err)
-		}
-		return nil
-	}
-	if rpcEnabled() {
-		conn, err := dialRPC()
-		if err != nil {
-			return fmt.Errorf("rpc submit-output: %w", err)
-		}
-		defer conn.Close()
-		if err := conn.SubmitOutput(drvPath, outputName); err != nil {
+	if b, closeB, ok, err := selectBackend(); err != nil {
+		return fmt.Errorf("rpc submit-output: %w", err)
+	} else if ok {
+		defer closeB()
+		if err := b.SubmitOutput(drvPath, outputName); err != nil {
 			return fmt.Errorf("rpc submit-output %s %s: %w", drvPath, outputName, err)
 		}
 		return nil
