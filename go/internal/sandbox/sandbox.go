@@ -19,6 +19,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/aterm"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/helper"
 	"github.com/tbereknyei/nixgg/internal/nar"
 	"github.com/tbereknyei/nixgg/internal/rpc"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
@@ -40,6 +41,18 @@ func Enabled() bool {
 // per-call fork+exec is worth avoiding here.
 func rpcEnabled() bool {
 	return os.Getenv("NIXGG_RPC") == "1"
+}
+
+// helperSocket returns the helper's socket path if NIXGG_RPC_HELPER
+// is set, or "" if not. A third, independently opt-in layer on top of
+// NIXGG_RPC: when set, every op relays through the helper (which
+// holds a pool of already-handshaken daemon connections — see
+// internal/helper's own docs) instead of each shim invocation
+// dialing the daemon directly. Checked before rpcEnabled() at each
+// call site so a helper implies the RPC path is wanted without also
+// requiring NIXGG_RPC=1 to be set redundantly.
+func helperSocket() string {
+	return os.Getenv("NIXGG_RPC_HELPER")
 }
 
 // dialRPC connects to the daemon socket the sandbox already exposes
@@ -68,14 +81,30 @@ func dialRPC() (*rpc.Conn, error) {
 // archive/link and once total for submit-output), so this is where
 // ARCHITECTURE.md's "What we don't (yet) do" fork+exec-tax measurement
 // (~44-90ms/call) actually adds up across a many-TU build.
+//
+// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
+// instead of dialing the daemon directly — amortizes the daemon's own
+// handshake (measured ~4.3ms, 99% of the direct-RPC per-call cost)
+// across every shim invocation in the build via a pooled connection,
+// rather than paying it once per call. Checked before NIXGG_RPC so a
+// helper socket doesn't also require NIXGG_RPC=1 to be set.
 func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
+	name := drv.Name + ".drv"
+	if sock := helperSocket(); sock != "" {
+		contents := aterm.Unparse(drv)
+		refs := aterm.References(drv)
+		path, err := helper.AddDerivation(sock, name, []byte(contents), refs)
+		if err != nil {
+			return "", fmt.Errorf("helper derivation add %s: %w", drv.Name, err)
+		}
+		return path, nil
+	}
 	if rpcEnabled() {
 		conn, err := dialRPC()
 		if err != nil {
 			return "", fmt.Errorf("rpc derivation add: %w", err)
 		}
 		defer conn.Close()
-		name := drv.Name + ".drv"
 		contents := aterm.Unparse(drv)
 		refs := aterm.References(drv)
 		path, err := conn.AddDerivation(name, []byte(contents), refs)
@@ -115,7 +144,21 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // instead of fork+exec'ing `nix store add --scan` — the second-
 // highest-volume of the three sandbox ops (one call per compile TU,
 // same as DerivationAdd).
+//
+// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
+// instead — see DerivationAdd's own docstring for why.
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
+	if sock := helperSocket(); sock != "" {
+		var buf bytes.Buffer
+		if err := nar.Dump(&buf, path); err != nil {
+			return "", fmt.Errorf("helper store add --scan %s: encode NAR: %w", path, err)
+		}
+		sp, err := helper.AddToStoreScanning(sock, name, buf.Bytes())
+		if err != nil {
+			return "", fmt.Errorf("helper store add --scan %s: %w", path, err)
+		}
+		return sp, nil
+	}
 	if rpcEnabled() {
 		conn, err := dialRPC()
 		if err != nil {
@@ -166,7 +209,16 @@ func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 // own daemon socket instead of fork+exec'ing `nix store
 // submit-output` — see internal/rpc's own docs for the wire protocol
 // this replicates (WorkerProto::Op::SubmitOutput, opcode 1000).
+//
+// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
+// instead — see DerivationAdd's own docstring for why.
 func SubmitOutput(cfg *toolchain.Config, drvPath, outputName string) error {
+	if sock := helperSocket(); sock != "" {
+		if err := helper.SubmitOutput(sock, drvPath, outputName); err != nil {
+			return fmt.Errorf("helper submit-output %s %s: %w", drvPath, outputName, err)
+		}
+		return nil
+	}
 	if rpcEnabled() {
 		conn, err := dialRPC()
 		if err != nil {

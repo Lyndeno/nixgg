@@ -517,6 +517,15 @@
               dir = ./dyn-drv/hello-mkbuild.nix;
               args = { inherit (pkgs) lib; };
             };
+            # Same fixture, rpcHelper = true — exercises
+            # internal/helper's persistent daemon-side relay. See
+            # dyn-drv/hello-helper-mkbuild.nix's own comment for why
+            # this is a separate attribute rather than a flag on
+            # .#hello itself.
+            hello-helper = {
+              dir = ./dyn-drv/hello-helper-mkbuild.nix;
+              args = { inherit (pkgs) lib; };
+            };
             lua = {
               dir = ./examples/lua;
               args = { src = lua-src; };

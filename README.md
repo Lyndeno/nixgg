@@ -565,6 +565,41 @@ On by default (`NIXGG_RPC=1` in every sandbox mechanism's env block);
 up. `tests/drv-equivalence.sh`'s full sweep (149 drvs) and
 `tests/smoke.sh EXAMPLES=all` both pass with it on.
 
+### Optional: a persistent helper to amortize the daemon handshake
+
+Even on the direct-RPC path above, every shim invocation still opens
+its own connection to the real Nix daemon and pays a full handshake —
+measured at **~4.3ms, 99% of a direct RPC call's own cost**, versus
+**~23µs** for an op on a connection that's already open. And it's paid
+*twice* per compile today, since `DerivationAdd`/`StoreAddScan` each
+dial independently.
+
+`mkNixggBuild`'s optional `rpcHelper = true;` starts a small persistent
+process (`nixgg helper`, `go/internal/helper`) once per build, in
+`preBuild`, and every shim relays its three ops through it instead of
+dialing the daemon directly. The helper holds a small *pool* of
+already-handshaken daemon connections — sized to `$NIX_BUILD_CORES` —
+not a single shared one: the Nix worker protocol is strictly
+request/response per connection (confirmed against the real Nix C++
+client, which itself pools connections rather than multiplexing ops
+over one socket), so a lone shared connection would serialize a
+`make -j` build's concurrent shim calls against each other.
+
+```nix
+mkNixggBuild {
+  # ...
+  rpcHelper = true;
+}
+```
+
+Verified end-to-end on both a single-drv build (`.#hello-helper`) and
+a real `make -j$NIX_BUILD_CORES` build with genuine shim-call
+concurrency (mosh, 30 TUs + 6 archives) — byte-identical drv hashes to
+every other path, correct output, clean shutdown. Off by default:
+this is a newer, smaller-blast-radius idea than the direct-RPC path
+above, worth exploring further rather than defaulting on yet. See
+`go/internal/helper`'s own docs for the pool/protocol design.
+
 ## Requirements
 
 - Nix ≥ 2.36 for sandbox mode (needs `builder-rpc-v0` + `nix store

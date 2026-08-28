@@ -47,6 +47,21 @@
   nativeBuildInputs ? [ ],
   buildInputs ? [ ],
   propagatedBuildInputs ? [ ],
+  # Optional: relay DerivationAdd/StoreAddScan/SubmitOutput through a
+  # persistent `nixgg helper` process instead of each shim invocation
+  # dialing the daemon directly. Default false — this is a genuinely
+  # optional add-on, not yet verified end-to-end the way NIXGG_RPC=1
+  # itself was before defaulting on (see README.md's "Talking to the
+  # daemon directly instead of shelling out" for that verification and
+  # the ~48% measurement it rests on). The idea: the real daemon
+  # handshake costs ~4.3ms — 99% of a direct RPC call's cost, measured
+  # — versus ~23µs for an op on an already-open connection; a helper
+  # holding a small pool of daemon connections open for the whole
+  # build amortizes that handshake across every shim invocation
+  # instead of paying it once per call (twice per compile TU today —
+  # StoreAddScan and DerivationAdd each dial independently). See
+  # go/internal/helper for the implementation.
+  rpcHelper ? false,
 }:
 
 let
@@ -170,6 +185,40 @@ let
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
   '';
 
+  # rpcHelper's own preBuild/postBuild addendum. Started AFTER
+  # scrubWrapperEnv puts `${nixgg}/bin` on PATH (so plain `nixgg` here
+  # resolves), backgrounded, and polled for its own "ready" stdout
+  # line before buildPhase's shims can race its bind(). Socket lives
+  # under $TMPDIR (== $NIX_BUILD_TOP inside the sandbox — stable and
+  # unique for this build, cleaned up with the rest of the build dir
+  # regardless of whether postBuild's stop runs), named distinctly
+  # from the sandbox's own .nix-socket so the two can't collide.
+  #
+  # --pool-size tracks $NIX_BUILD_CORES: the whole reason to pool
+  # (see go/internal/helper's own docstring) is so a `make -j` build's
+  # concurrent shim calls don't serialize on the helper's own single
+  # connection to the real daemon.
+  helperSocket = "$TMPDIR/.nixgg-helper.sock";
+  helperPidFile = "$TMPDIR/.nixgg-helper.pid";
+  helperPreBuild = lib.optionalString rpcHelper ''
+    nixgg helper --socket "${helperSocket}" --pool-size "$NIX_BUILD_CORES" &
+    echo $! > "${helperPidFile}"
+    for _ in $(seq 1 50); do
+      [ -S "${helperSocket}" ] && break
+      sleep 0.1
+    done
+    if [ ! -S "${helperSocket}" ]; then
+      echo "nixgg: rpcHelper enabled but ${helperSocket} never appeared" >&2
+      exit 1
+    fi
+    export NIXGG_RPC_HELPER="${helperSocket}"
+  '';
+  helperPostBuild = lib.optionalString rpcHelper ''
+    if [ -f "${helperPidFile}" ]; then
+      kill "$(cat "${helperPidFile}")" 2>/dev/null || true
+    fi
+  '';
+
   drv = stdenv.mkDerivation (
     {
       name = drvName;
@@ -227,11 +276,12 @@ let
       # -rpath into real store paths) survives the scrub: stdenv's
       # setup-hooks add those AFTER the per-run noise, so filtering the
       # noise keeps the per-input flags.
-      preBuild = scrubWrapperEnv;
+      preBuild = scrubWrapperEnv + helperPreBuild;
 
       buildPhase = ''
         runHook preBuild
         ${buildCommand}
+        ${helperPostBuild}
         runHook postBuild
       '';
     }

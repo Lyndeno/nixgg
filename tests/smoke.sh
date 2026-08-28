@@ -55,8 +55,19 @@ store = local?root=$ALT_STORE
 #
 # "-" as the run command means the artifact is a library: existing at the
 # right path with non-zero size is all we assert.
+#
+# hello-helper is the same fixture as hello, but with rpcHelper = true
+# — exercises internal/helper's persistent daemon-side relay (see
+# dyn-drv/hello-helper-mkbuild.nix) end to end: the helper process
+# starts in preBuild, serves every shim invocation's
+# DerivationAdd/StoreAddScan/SubmitOutput call over a pooled
+# connection, and is killed in postBuild. Same expected drv hashes as
+# hello — a mismatch here means the helper path produced different
+# bytes than the direct-RPC/CLI paths, which is the one thing it must
+# never do.
 QUICK=(
   "hello|bin/hello|%s"
+  "hello-helper|bin/hello|%s"
   "two-phase|bin/app|%s"
   "fmt|lib/libfmt.a|-"
   "lua|bin/lua|%s -v"
