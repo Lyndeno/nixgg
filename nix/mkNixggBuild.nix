@@ -293,6 +293,11 @@ let
     export NIX_CFLAGS_COMPILE NIX_LDFLAGS
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
     export NIXGG_BATCH_GROUPS=${lib.escapeShellArg batchGroupsJSON}
+    # Must match the sandbox-side attr below. mode.Passthrough reads this
+    # in BOTH modes, so a native replay that lacks it models TUs the
+    # sandbox passed through — different drv sets, and drv-equivalence
+    # fails for any package that sets passthroughPaths.
+    export NIXGG_PASSTHROUGH_PATHS=${lib.escapeShellArg (builtins.toJSON passthroughPaths)}
   '';
 
   # rpcHelper's own preBuild/postBuild addendum. Started AFTER
