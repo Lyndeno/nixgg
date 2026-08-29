@@ -29,12 +29,17 @@
   openssl,
   zlib,
   abseil-cpp,
+  # rpcHelper passthrough — see flake.nix's mosh-helper entry, which
+  # sets this true to benchmark internal/helper against this same
+  # 30-TU/6-archive fixture (the one drv-equivalence/smoke already use
+  # to correctness-verify the helper's concurrent path).
+  rpcHelper ? false,
 }:
 
 mkNixggBuild {
   pname = "mosh";
   version = "unstable";
-  inherit src;
+  inherit src rpcHelper;
   target = "mosh-server";
   nativeBuildInputs = [
     autoconf

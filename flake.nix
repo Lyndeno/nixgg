@@ -544,6 +544,24 @@
                 src = mosh-src;
               };
             };
+            # Same fixture, rpcHelper = true — a real multi-TU/
+            # multi-archive build (30 TUs + 6 archives, genuine `make
+            # -j` shim-call concurrency) to benchmark internal/helper's
+            # own win against, not just correctness-verify it (that's
+            # what mosh-dyndrv/tests/smoke.sh already do). See
+            # go/internal/helper's own docs for the pool design this
+            # measures.
+            mosh-helper = {
+              dir = ./examples/mosh;
+              args = {
+                inherit (pkgs)
+                  autoconf automake libtool pkg-config perl protobuf which
+                  gnum4 gnugrep gnused gawk file
+                  ncurses openssl zlib abseil-cpp;
+                src = mosh-src;
+                rpcHelper = true;
+              };
+            };
             redis = {
               dir = ./examples/redis;
               args = {

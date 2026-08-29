@@ -595,10 +595,26 @@ mkNixggBuild {
 Verified end-to-end on both a single-drv build (`.#hello-helper`) and
 a real `make -j$NIX_BUILD_CORES` build with genuine shim-call
 concurrency (mosh, 30 TUs + 6 archives) — byte-identical drv hashes to
-every other path, correct output, clean shutdown. Off by default:
-this is a newer, smaller-blast-radius idea than the direct-RPC path
-above, worth exploring further rather than defaulting on yet. See
-`go/internal/helper`'s own docs for the pool/protocol design.
+every other path, correct output, clean shutdown.
+
+Measured on that same mosh fixture (single-file edit, warm store,
+substituters off, 5 runs averaged each way, `.#mosh` vs `.#mosh` with
+`rpcHelper = true`): **~48.7s → ~47.1s, roughly 3% faster on
+average — and noticeably more consistent run to run (stdev ~1.9s →
+~0.4s)**, not the large win the per-call handshake number alone might
+suggest. The reason: this build makes ~54 RPC calls total (30 TUs ×
+~2 calls + 6 archives + 1 link + submit-output), so the handshake
+overhead it amortizes is worth ~54 × 4.3ms ≈ 230ms out of a ~48s wall
+clock — real for a warm-rebuild-dominated workload, but small next to
+Nix's own per-drv bookkeeping and `make`'s own overhead at this scale.
+The win should grow with TU count (more calls to amortize the same
+per-build helper-startup cost across) and with build parallelism (more
+concurrent callers contending for direct-dial's per-call handshake
+instead of the helper's already-open pool) — untested at LLVM scale.
+Off by default: still a smaller, less-tested win than the direct-RPC
+path above, worth exploring further on a larger project before
+defaulting on. See `go/internal/helper`'s own docs for the
+pool/protocol design.
 
 ## Requirements
 
