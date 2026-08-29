@@ -422,6 +422,20 @@
             mosh-dyndrv-configure-cached = pkgs.mosh.override {
               stdenv = dynDrvConfigureCacheStdenv { stdenv = pkgs.stdenv; };
             };
+            # Same fixture, rpcHelper = true — configure is cached
+            # (group A, unaffected by rpcHelper) so a rebuild after a
+            # single source edit reruns ONLY group B's shim-heavy
+            # build phase. Meant for benchmarking internal/helper's
+            # own win in isolation from configure/eval overhead, which
+            # dominated an earlier attempt to measure it on plain
+            # .#mosh/.#mosh-helper (see README.md's "Optional: a
+            # persistent helper" section).
+            mosh-dyndrv-configure-cached-helper = pkgs.mosh.override {
+              stdenv = dynDrvConfigureCacheStdenv {
+                stdenv = pkgs.stdenv;
+                rpcHelper = true;
+              };
+            };
             # zstd through the combined mechanism: multi-output
             # (out/bin/dev/man), a real ctest-based checkPhase, and
             # the same gen_html mid-build-exec problem zstd-dyndrv

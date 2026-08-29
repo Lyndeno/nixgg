@@ -597,33 +597,41 @@ a real `make -j$NIX_BUILD_CORES` build with genuine shim-call
 concurrency (mosh, 30 TUs + 6 archives) — byte-identical drv hashes to
 every other path, correct output, clean shutdown.
 
-Measured on that same mosh fixture (single-file edit, warm store,
-substituters off, 5 runs averaged each way, `.#mosh` vs `.#mosh` with
-`rpcHelper = true`): **~48.7s → ~47.1s, roughly 3% faster on
-average — and noticeably more consistent run to run (stdev ~1.9s →
-~0.4s)**, not the large win the per-call handshake number alone might
-suggest. The reason: this build makes ~54 RPC calls total (30 TUs ×
-~2 calls + 6 archives + 1 link + submit-output), so the handshake
-overhead it amortizes is worth ~54 × 4.3ms ≈ 230ms out of a ~48s wall
-clock — real for a warm-rebuild-dominated workload, but small next to
-Nix's own per-drv bookkeeping and `make`'s own overhead at this scale.
+**Measured, and it doesn't help.** Two whole-build measurements
+(mosh's 30 TUs at ~48.7s→~47.1s, ~3% faster; redis's 175 TUs at
+~64.7s→~65.4s, no difference) looked inconclusive rather than
+negative, so the natural next question was whether TU count mattered.
+It doesn't, but not for the reason initially guessed. Tracing a real
+mosh build phase-by-phase (`nix build -Lv`, timestamped) showed why
+those numbers were too noisy to answer the question at all: of a
+~20-48s wall clock, flake evaluation took ~2s, `configure` (autoconf,
+untouched by RPC/helper either way) took ~13s, and the shim-heavy
+`make -j` pass — the ONLY phase either mechanism can affect — was only
+~4.7s. Everything else in that measurement was Nix's own evaluation
+and configure-script noise, not signal.
 
-Re-measured the same way on redis (175 TUs, ~6x mosh's TU count,
-`.#redis` vs `.#redis-helper`) to check whether the win scales with
-TU count the way that arithmetic predicts: it doesn't. **~64.7s vs
-~65.4s — no measurable difference, well inside both runs' run-to-run
-noise (stdev ~5.3s / ~3.4s).** So the effect isn't simply "more TUs,
-bigger win": redis's own per-drv/Nix-bookkeeping overhead scales up
-alongside its TU count too (65s wall clock vs mosh's 48s for a
-single-file edit), and that noise floor swallows whatever the extra
-~300 amortized handshakes (175 TUs × ~2 calls, redis's own count) were
-worth. Whether a real win shows up at a larger scale still (LLVM,
-~1500 TUs) or whether mosh's 3% was closer to the ceiling than the
-floor is open — the honest read of both data points together is "a
-small, inconsistent effect at this scale," not a trend.
-Off by default: still a smaller, less-tested win than the direct-RPC
-path above, worth exploring further on a larger project before
-defaulting on. See `go/internal/helper`'s own docs for the
+Isolating that shim-pass window directly (`dynDrvConfigureCacheStdenv`
+splits configure into its own cached derivation, so a single-file edit
+reruns only the build phase — see `.#mosh-dyndrv-configure-cached` vs
+`.#mosh-dyndrv-configure-cached-helper`) gives a clean ~2.7s window, 8
+runs each way: **~2.74s direct-RPC vs ~2.71s with the helper — ~1%,
+statistically indistinguishable from zero (t-stat 0.61).**
+
+The reason the helper doesn't help: it amortizes the daemon
+handshake (~4.3ms), but Nix's own per-derivation overhead — forking a
+builder, setting up the sandbox, mounting the store — is roughly
+10-20x that per tiny derivation. The direct-RPC path (this section's
+own ~48% win) was large because fork+exec'ing the `nix` CLI cost
+~50-90ms per call, comparable in size to that per-derivation overhead.
+The helper's ~4.3ms is an order of magnitude too small to matter next
+to what's left. Making the helper worthwhile would require cutting
+Nix's own per-derivation cost, not the connection it happens to reuse
+— a different, much larger project than pooling sockets.
+
+Kept as opt-in infrastructure (correctness-verified, harmless, useful
+if per-derivation overhead ever drops enough to expose the handshake
+again) but not recommended, and not worth further investment at
+current scale. See `go/internal/helper`'s own docs for the
 pool/protocol design.
 
 ## Requirements

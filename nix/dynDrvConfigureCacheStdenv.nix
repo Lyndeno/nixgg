@@ -62,6 +62,15 @@
   # shape as configureCacheStdenv's own param — see
   # nix/configureSrcFilter.nix.
   configureSrcFilter ? null,
+  # Relay group B's DerivationAdd/StoreAddScan/SubmitOutput through a
+  # persistent `nixgg helper` instead of each shim invocation dialing
+  # the daemon directly — same mechanism and rationale as
+  # mkNixggBuild.nix's own `rpcHelper` param (see its docstring for
+  # the measurement this rests on). Group A never needs this: every
+  # shim call there is a bypassed passthrough exec that never reads
+  # NIXGG_RPC/NIXGG_RPC_HELPER at all (see ggShimsOnPath's own comment
+  # on NIXGG_RPC above).
+  rpcHelper ? false,
 }:
 
 let
@@ -109,6 +118,32 @@ let
   submitBuildTreeScript = drvName: ''
     realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
     ${nixgg}/bin/nixgg assemble "$NIX_BUILD_TOP" "${drvName}"
+  '';
+
+  # Same mechanism as mkNixggBuild.nix's own helperPreBuild/
+  # helperPostBuild — see there for the socket-polling/pool-size
+  # rationale. Placed in group B's own preBuild/postBuild (added to
+  # withGroupBAttrs below), not group A's: group A's shim calls are
+  # all bypassed passthrough execs, so a helper there would sit idle.
+  helperSocket = "$TMPDIR/.nixgg-helper.sock";
+  helperPidFile = "$TMPDIR/.nixgg-helper.pid";
+  helperPreBuild = lib.optionalString rpcHelper ''
+    ${nixgg}/bin/nixgg helper --socket "${helperSocket}" --pool-size "$NIX_BUILD_CORES" &
+    echo $! > "${helperPidFile}"
+    for _ in $(seq 1 50); do
+      [ -S "${helperSocket}" ] && break
+      sleep 0.1
+    done
+    if [ ! -S "${helperSocket}" ]; then
+      echo "nixgg: rpcHelper enabled but ${helperSocket} never appeared" >&2
+      exit 1
+    fi
+    export NIXGG_RPC_HELPER="${helperSocket}"
+  '';
+  helperPostBuild = lib.optionalString rpcHelper ''
+    if [ -f "${helperPidFile}" ]; then
+      kill "$(cat "${helperPidFile}")" 2>/dev/null || true
+    fi
   '';
 in
 
@@ -332,9 +367,14 @@ stdenv0.override (
                 # turns on.
                 preBuild = ''
                   unset NIXGG_BYPASS
-                '' + (orig.preBuild or "");
+                '' + helperPreBuild + (orig.preBuild or "");
 
-                postBuild = (orig.postBuild or "") + submitBuildTreeScript outerName;
+                # helperPostBuild runs AFTER submitBuildTreeScript, not
+                # before: `nixgg assemble` (which submitBuildTreeScript
+                # invokes) makes its own DerivationAdd/StoreAddScan/
+                # SubmitOutput calls and should still see
+                # NIXGG_RPC_HELPER live while it does.
+                postBuild = (orig.postBuild or "") + submitBuildTreeScript outerName + helperPostBuild;
               };
           in
           extraGroupBAttrs finalAttrs base;

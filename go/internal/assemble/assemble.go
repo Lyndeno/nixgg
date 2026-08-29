@@ -29,11 +29,18 @@ type Stub struct {
 
 // skipNames are sandbox-infrastructure entries that are never real
 // build output. ".nix-socket" is builder-rpc-v0's own unix socket —
-// `nix store add --scan` can't ingest a socket. ".gg-stage" is
-// StageForScan's own working directory.
+// `nix store add --scan` can't ingest a socket. ".nixgg-helper.sock"
+// is internal/helper's own socket (mkNixggBuild.nix/
+// dynDrvConfigureCacheStdenv.nix's rpcHelper, when enabled) — same
+// reason. ".nixgg-helper.pid" isn't a socket, but it's the same
+// sandbox-infrastructure category and sits right next to it; nothing
+// downstream needs it staged either. ".gg-stage" is StageForScan's
+// own working directory.
 var skipNames = map[string]bool{
-	".nix-socket": true,
-	".gg-stage":   true,
+	".nix-socket":        true,
+	".nixgg-helper.sock": true,
+	".nixgg-helper.pid":  true,
+	".gg-stage":          true,
 }
 
 // Walk finds every drvref stub under root, in deterministic
