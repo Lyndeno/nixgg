@@ -607,10 +607,20 @@ suggest. The reason: this build makes ~54 RPC calls total (30 TUs ×
 overhead it amortizes is worth ~54 × 4.3ms ≈ 230ms out of a ~48s wall
 clock — real for a warm-rebuild-dominated workload, but small next to
 Nix's own per-drv bookkeeping and `make`'s own overhead at this scale.
-The win should grow with TU count (more calls to amortize the same
-per-build helper-startup cost across) and with build parallelism (more
-concurrent callers contending for direct-dial's per-call handshake
-instead of the helper's already-open pool) — untested at LLVM scale.
+
+Re-measured the same way on redis (175 TUs, ~6x mosh's TU count,
+`.#redis` vs `.#redis-helper`) to check whether the win scales with
+TU count the way that arithmetic predicts: it doesn't. **~64.7s vs
+~65.4s — no measurable difference, well inside both runs' run-to-run
+noise (stdev ~5.3s / ~3.4s).** So the effect isn't simply "more TUs,
+bigger win": redis's own per-drv/Nix-bookkeeping overhead scales up
+alongside its TU count too (65s wall clock vs mosh's 48s for a
+single-file edit), and that noise floor swallows whatever the extra
+~300 amortized handshakes (175 TUs × ~2 calls, redis's own count) were
+worth. Whether a real win shows up at a larger scale still (LLVM,
+~1500 TUs) or whether mosh's 3% was closer to the ceiling than the
+floor is open — the honest read of both data points together is "a
+small, inconsistent effect at this scale," not a trend.
 Off by default: still a smaller, less-tested win than the direct-RPC
 path above, worth exploring further on a larger project before
 defaulting on. See `go/internal/helper`'s own docs for the

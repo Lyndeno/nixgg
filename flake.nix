@@ -569,6 +569,19 @@
                 src = redis-src;
               };
             };
+            # Same fixture, rpcHelper = true — 175 TUs (deps + src),
+            # ~6x mosh's own rpcHelper-benchmark fixture, to check
+            # whether the helper's win scales with TU count the way
+            # its ~4.3ms-handshake rationale predicts. See
+            # examples/redis/default.nix's own comment.
+            redis-helper = {
+              dir = ./examples/redis;
+              args = {
+                inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
+                src = redis-src;
+                rpcHelper = true;
+              };
+            };
             ffmpeg = {
               dir = ./examples/ffmpeg;
               args = {
