@@ -119,6 +119,39 @@ func selectBackend() (b rpcBackend, close func(), ok bool, err error) {
 	return nil, nil, false, nil
 }
 
+// rpcActive reports whether any non-CLI backend is configured. A helper
+// socket implies the RPC path is wanted without NIXGG_RPC=1 also being
+// set, matching selectBackend's own precedence.
+func rpcActive() bool {
+	return helperSocket() != "" || rpcEnabled()
+}
+
+// selectBackendFor is selectBackend, but declines the helper for a
+// payload its frame cannot carry, falling through to a direct
+// connection instead.
+//
+// internal/helper encodes []byte as base64 in JSON (4/3 inflation)
+// behind a uint32 length prefix, so a ~3 GiB NAR overflows it. A
+// dynDrvStdenv assemble stages the WHOLE build tree in one call, which
+// for a kernel is exactly that big.
+//
+// Going direct costs one daemon handshake (~4.3ms) on a call that
+// already takes minutes. Pooling only ever paid off across the many
+// small per-TU calls; it was never going to pay for this one.
+func selectBackendFor(payloadLen int) (b rpcBackend, close func(), ok bool, err error) {
+	if sock := helperSocket(); sock != "" && payloadLen <= helper.MaxPayloadBytes {
+		return helperBackend(sock), func() {}, true, nil
+	}
+	if rpcActive() {
+		conn, err := dialRPC()
+		if err != nil {
+			return nil, nil, false, err
+		}
+		return conn, func() { conn.Close() }, true, nil
+	}
+	return nil, nil, false, nil
+}
+
 // DerivationAdd pipes a JSON drv description to `nix derivation add`
 // and returns the resulting drv store path. --offline: nix should
 // have zero business contacting substituters for a `derivation add`
@@ -194,19 +227,28 @@ func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 	// daemon, and Nix's naming rules apply identically to each. Doing it
 	// per-backend would let a new one be added without it.
 	name = StoreName(name)
-	if b, closeB, ok, err := selectBackend(); err != nil {
-		return "", fmt.Errorf("rpc store add --scan: %w", err)
-	} else if ok {
-		defer closeB()
+	if rpcActive() {
+		// Encoded ONCE, before a transport is chosen. The NAR for a
+		// dynDrvStdenv assemble is the whole build tree — multiple GB
+		// for a kernel — so re-dumping it per candidate path would mean
+		// a second multi-GB encode.
 		var buf bytes.Buffer
 		if err := nar.Dump(&buf, path); err != nil {
 			return "", fmt.Errorf("rpc store add --scan %s: encode NAR: %w", path, err)
 		}
-		sp, err := b.AddToStoreScanning(name, buf.Bytes())
+		dump := buf.Bytes()
+		b, closeB, ok, err := selectBackendFor(len(dump))
 		if err != nil {
-			return "", fmt.Errorf("rpc store add --scan %s: %w", path, err)
+			return "", fmt.Errorf("rpc store add --scan: %w", err)
 		}
-		return sp, nil
+		if ok {
+			defer closeB()
+			sp, err := b.AddToStoreScanning(name, dump)
+			if err != nil {
+				return "", fmt.Errorf("rpc store add --scan %s: %w", path, err)
+			}
+			return sp, nil
+		}
 	}
 	cmd := exec.Command(cfg.Nix, "--offline", "store", "add", "--scan", "-n", name, path)
 	cmd.Env = os.Environ()

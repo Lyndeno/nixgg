@@ -53,6 +53,19 @@ func writeFrame(w io.Writer, v any) error {
 	if err != nil {
 		return fmt.Errorf("helper: encode frame: %w", err)
 	}
+	// Refuse a body the length prefix cannot describe. uint32(len(body))
+	// silently WRAPS past 4 GiB, and the wrapped value is small, so it
+	// passes readFrame's maxFrameLen check — the reader then consumes a
+	// truncated prefix and fails with "unexpected end of JSON input"
+	// while the writer believes it succeeded. Checking here, against the
+	// same limit the reader enforces, makes the failure loud and local.
+	//
+	// Reachable in practice: NarDump is []byte, which JSON encodes as
+	// base64 (4/3 inflation), so a ~3 GiB NAR overflows. A kernel's
+	// whole-tree stage at assemble time is exactly that big.
+	if len(body) > maxFrameLen {
+		return fmt.Errorf("helper: frame body %d bytes exceeds limit %d", len(body), maxFrameLen)
+	}
 	var lenBuf [4]byte
 	binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(body)))
 	if _, err := w.Write(lenBuf[:]); err != nil {
@@ -73,6 +86,33 @@ func writeFrame(w io.Writer, v any) error {
 // scripts this project produces), so a multi-hundred-MB frame is
 // certainly a desynchronised protocol, not a legitimate payload.
 const maxFrameLen = 512 * 1024 * 1024
+
+// frameEnvelopeBytes reserves room for everything in a frame that is
+// NOT the payload: the method name, the store name, the JSON braces,
+// quotes and field labels. 4 KiB is far more than any real envelope
+// (method and name are short strings) and costs nothing — it only
+// shifts the helper/direct-RPC boundary by 4 KiB out of 384 MiB.
+const frameEnvelopeBytes = 4096
+
+// MaxPayloadBytes is the largest raw []byte (NAR dump, drv contents) a
+// caller may hand the helper. Derived from maxFrameLen rather than
+// guessed, so the two cannot drift: JSON encodes []byte as base64,
+// which inflates by 4/3.
+//
+// The envelope allowance is not cosmetic. maxFrameLen*3/4 is EXACTLY
+// the payload whose base64 encoding equals maxFrameLen, so the
+// surrounding {"method":…,"name":…,"dump":…} bytes push the marshalled
+// frame over — and writeFrame then rejects it. Since selectBackendFor
+// admits anything <= this constant, a payload in the top sliver of the
+// range would be routed to the helper and hard-fail instead of falling
+// back to the direct-RPC path the whole mechanism exists to reach.
+//
+// Callers with a bigger payload must not use the helper — see
+// sandbox.StoreAddScan. Pooling exists to amortize the daemon handshake
+// across MANY SMALL calls; a single multi-GB upload pays one handshake
+// either way, so routing it through the helper buys nothing and costs an
+// extra base64 round-trip through a socket.
+const MaxPayloadBytes = (maxFrameLen - frameEnvelopeBytes) * 3 / 4
 
 func readFrame(r io.Reader, v any) error {
 	var lenBuf [4]byte

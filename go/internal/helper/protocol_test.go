@@ -1,7 +1,9 @@
 package helper
 
 import (
+	"bytes"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +82,48 @@ func TestFrameRoundTripPreservesBinaryContents(t *testing.T) {
 	<-done
 	if string(got.Contents) != string(want) {
 		t.Fatalf("got %v, want %v", got.Contents, want)
+	}
+}
+
+// writeFrame must refuse a body its uint32 length prefix cannot
+// describe, rather than silently wrapping.
+//
+// This is the bug a kernel build hit: NarDump is []byte, JSON encodes
+// that as base64 (4/3 inflation), so a ~3 GiB whole-tree NAR produced a
+// body over 4 GiB. uint32(len(body)) wrapped to a SMALL number, which
+// then passed readFrame's maxFrameLen sanity check — the reader
+// consumed a truncated prefix and failed with "unexpected end of JSON
+// input" while the writer believed it had succeeded. The sanity limit
+// was defeated by the very overflow it existed to catch, because it ran
+// on the reader after the writer had already corrupted the length.
+func TestWriteFrameRejectsOversizedBody(t *testing.T) {
+	// The invariant that matters is not an arithmetic identity but a
+	// round-trip one: a payload of exactly MaxPayloadBytes must SURVIVE
+	// writeFrame. maxFrameLen*3/4 is precisely the payload whose base64
+	// equals maxFrameLen, leaving no room for the JSON envelope, so the
+	// cap reserves frameEnvelopeBytes. Asserting the old identity here
+	// would re-pin the off-by-envelope bug.
+	//
+	// The check is on the marshalled body, so drive it through the real
+	// encoder rather than fabricating a length.
+	atCap := make([]byte, MaxPayloadBytes)
+	var okSink bytes.Buffer
+	if err := writeFrame(&okSink, request{Op: "AddToStoreScanning", NarDump: atCap}); err != nil {
+		t.Fatalf("writeFrame rejected a payload of exactly MaxPayloadBytes (%d): %v — "+
+			"selectBackendFor admits this size, so it would hard-fail instead of falling back",
+			MaxPayloadBytes, err)
+	}
+	// A payload just past what the frame can carry.
+	big := make([]byte, MaxPayloadBytes+(1<<20))
+	var sink bytes.Buffer
+	err := writeFrame(&sink, request{Op: "AddToStoreScanning", NarDump: big})
+	if err == nil {
+		t.Fatal("writeFrame accepted a body larger than maxFrameLen; it would wrap the length prefix")
+	}
+	if !strings.Contains(err.Error(), "exceeds limit") {
+		t.Errorf("want an explicit size error, got %v", err)
+	}
+	if sink.Len() != 0 {
+		t.Errorf("writeFrame wrote %d bytes before failing; a partial frame desynchronises the stream", sink.Len())
 	}
 }
