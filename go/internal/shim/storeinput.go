@@ -70,7 +70,7 @@ func storeInput(c classify.Result, callerPath string) (expr.Input, expr.JSONDrvI
 // Before classifying, each input is checked against
 // batchpending.Path: if it's a still-deferred batch member (see
 // deferCompileToBatch), it's resolved into an ordinary per-TU
-// thunk/drv HERE, via resolvePendingMember, before classify.Target
+// thunk/drv HERE, via ResolvePendingMember, before classify.Target
 // ever sees it. This is what makes batching safe for every consumer
 // that ISN'T a same-group archive (archive.go's own tryBatchArchive
 // checks for all-same-group-pending BEFORE calling classifyInputs at
@@ -86,7 +86,7 @@ func classifyInputs(
 	jsonInputs = make([]expr.JSONDrvInput, 0, len(inputs))
 	for _, in := range inputs {
 		if batchpending.Is(in) {
-			if err := resolvePendingMember(cfg, l, in); err != nil {
+			if err := ResolvePendingMember(cfg, l, in); err != nil {
 				logf("%s passthrough: resolving deferred batch member %s: %v", logPrefix, in, err)
 				return nil, nil, passthrough(), false
 			}

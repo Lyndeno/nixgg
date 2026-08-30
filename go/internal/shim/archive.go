@@ -40,6 +40,10 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 
 	logf("archive %s <- %s", archive, joinBase(inputs))
 
+	if handled, err := tryBatchArchive(cfg, l, archive, modifiers, inputs); handled {
+		return err
+	}
+
 	altPrefix := altStorePrefix(cfg.Store)
 	arInputs, jsonInputs, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "ar", func() error {
 		return Passthrough(realARFor(cfg), args)

@@ -9,7 +9,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/toolchain"
 )
 
-// resolvePendingMember is the safe fallback for a deferred batch
+// ResolvePendingMember is the safe fallback for a deferred batch
 // member (see deferCompileToBatch) that ends up NOT part of a
 // successful combined-archive submission: any consumer other than a
 // same-group archive (a mixed-group archive, a direct link with no
@@ -27,7 +27,7 @@ import (
 // output is unchanged (still a batch-pending stub) if this returns
 // an error, or if output does not reference a pending member at all
 // (returns nil, a no-op).
-func resolvePendingMember(cfg *toolchain.Config, l paths.Layout, output string) error {
+func ResolvePendingMember(cfg *toolchain.Config, l paths.Layout, output string) error {
 	recordPath := batchpending.Path(output)
 	if recordPath == "" {
 		return nil // not pending; nothing to do

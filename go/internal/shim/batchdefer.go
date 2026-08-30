@@ -14,7 +14,7 @@ import (
 // deferCompileToBatch is Compile's deferral path for a TU that
 // matched an opt-in batch group (cfg.BatchGroups.Classify). Instead
 // of submitting its own derivation now, it snapshots everything
-// needed to build it later — either standalone (resolvePendingMember,
+// needed to build it later — either standalone (ResolvePendingMember,
 // the safe fallback for any consumer that isn't a same-group
 // archive) or as one member of a combined batch-archive derivation
 // (tryBatchArchive, in batcharchive.go) — and writes a

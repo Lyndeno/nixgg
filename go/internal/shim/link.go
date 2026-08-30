@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/dispatch"
 	"github.com/tbereknyei/nixgg/internal/drvref"
@@ -338,8 +339,21 @@ func resolveLibFlag(name string, libDirs []string) string {
 			}
 			// Sandbox mode: drvref stub is a small regular file with
 			// our magic header. Peek at the first byte cheaply.
+			//
+			// batchpending.Is covers the deferred-batch-member case:
+			// a still-pending compile matched via -l rather than a
+			// direct path (e.g. a wholly-batched static lib built
+			// from deferred objects and referenced as -lfoo). Without
+			// this check, resolveLibFlag would return "" for such a
+			// file, silently leaving a bare -lfoo flag that resolves
+			// to nothing inside the sandbox — not a passthrough, a
+			// real correctness gap, since the file DOES exist and
+			// nixgg DOES know what it is; it just wasn't checked
+			// here. classifyInputs' own fallback prologue resolves it
+			// once claimed as an input, same as any other pending
+			// member.
 			if fi.Mode().IsRegular() && fi.Size() < 4096 {
-				if drvref.Is(cand) {
+				if drvref.Is(cand) || batchpending.Is(cand) {
 					return cand
 				}
 			}

@@ -12,6 +12,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/realise"
+	"github.com/tbereknyei/nixgg/internal/shim"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
 )
 
@@ -75,6 +76,17 @@ func cmdForce(args []string) error {
 	altPrefix := altStorePrefix(cfg.Store)
 
 	for _, target := range targets {
+		// A still-deferred batch member (see internal/shim's
+		// deferCompileToBatch) resolved individually here — a manual
+		// `nixgg force` on such a target doesn't go through
+		// classifyInputs' own fallback prologue (link/archive shims'
+		// chokepoint), so without this it would classify as Regular
+		// below ("not a nixgg symlink") and silently fail to
+		// accelerate, rather than resolving into the ordinary
+		// per-TU thunk/drv it would have been without batching.
+		if err := shim.ResolvePendingMember(cfg, l, target); err != nil {
+			return err
+		}
 		c := classify.Target(target, altPrefix, l)
 		switch c.Kind {
 		case classify.Absent:

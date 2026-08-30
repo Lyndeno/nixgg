@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/paths"
@@ -153,6 +154,27 @@ func TestResolveLibFlagOnlyClaimsOurArtifacts(t *testing.T) {
 	}
 	if got := resolveLibFlag("absent", []string{dir}); got != "" {
 		t.Errorf("nonexistent lib claimed: %q", got)
+	}
+}
+
+// TestResolveLibFlagClaimsBatchPendingArtifacts is a regression test
+// for a real gap found while implementing batch archives: a -lfoo
+// resolving to a still-deferred batch member's own stub (see
+// batchpending.Is) must be claimed the same way a drvref stub is —
+// otherwise resolveLibFlag returns "" and the caller leaves a bare
+// -lfoo flag, which resolves to nothing inside the sandbox even
+// though the file exists and nixgg knows exactly what produced it.
+func TestResolveLibFlagClaimsBatchPendingArtifacts(t *testing.T) {
+	dir := t.TempDir()
+
+	pending := filepath.Join(dir, "libbatched.a")
+	recordPath := filepath.Join(dir, "record.json")
+	if err := os.WriteFile(pending, []byte(batchpending.Body(recordPath)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveLibFlag("batched", []string{dir}); got != pending {
+		t.Errorf("batch-pending stub not claimed: got %q, want %q", got, pending)
 	}
 }
 

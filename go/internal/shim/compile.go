@@ -217,7 +217,7 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 // submitCompileThunk writes e's thunk, symlinks output at it, and
 // records the symlink — native mode's per-TU submission, factored out
 // so a later individually-resolved batch member (see
-// resolvePendingMember) can reach the identical code path Compile's
+// ResolvePendingMember) can reach the identical code path Compile's
 // own native branch uses, without duplicating it.
 func submitCompileThunk(l paths.Layout, e, output string) (thunkPath string, err error) {
 	id := thunk.Compute(e)
