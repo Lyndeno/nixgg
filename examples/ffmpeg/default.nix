@@ -42,12 +42,21 @@
   yasm,
   gnumake,
   which,
+  # batchGroups passthrough — see flake.nix's ffmpeg-batch entry.
+  # ffmpeg's own link target is ffmpeg_g (the binary), not any one
+  # of its 8 per-directory static libs (libavcodec.a/libavutil.a/
+  # libavformat.a/libavdevice.a/libavfilter.a/libswresample.a/
+  # libswscale.a/libpostproc.a), so unlike fmt-batch/gcc-batch none
+  # of them collide with NIXGG_SANDBOX_TARGET — batching should
+  # actually engage for all of them, on the largest TU count in the
+  # repo (~1200).
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "ffmpeg";
   version = "7.1.2";
-  inherit src;
+  inherit src batchGroups;
   # Stop at ffmpeg_g (unstripped). ffmpeg's Makefile normally does
   # `strip ffmpeg_g -o ffmpeg` after the link — but the link shim
   # left a drvref stub at ffmpeg_g (not a real ELF), so strip

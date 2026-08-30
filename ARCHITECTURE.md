@@ -557,13 +557,14 @@ see "What we don't (yet) do", now resolved below).
   derivation either way, same as the CLI did.
 
 - **Batching multiple TUs into one derivation** (a different idea
-  from the raw-protocol batching dismissed just above): after
-  measuring that `internal/helper`'s connection pooling doesn't help
-  (see README's "Optional: a persistent helper" section) because
-  Nix's own per-derivation overhead — forking a builder, sandboxing,
-  mounting the store — is ~10-20x the daemon handshake cost it
-  amortizes, the next lever is derivation *count* itself: bundle N
-  TUs into one multi-output derivation instead of one drv per TU.
+  from the raw-protocol batching dismissed just above) is now real,
+  not a prototype: after measuring that `internal/helper`'s
+  connection pooling doesn't help (see README's "Optional: a
+  persistent helper" section) because Nix's own per-derivation
+  overhead — forking a builder, sandboxing, mounting the store — is
+  ~10-20x the daemon handshake cost it amortizes, the next lever is
+  derivation *count* itself: bundle N TUs into one multi-output
+  derivation instead of one drv per TU.
 
   This only pays off for source that's genuinely stable relative to
   how often the project rebuilds — a content-addressed batch
@@ -574,31 +575,63 @@ see "What we don't (yet) do", now resolved below).
   (redis's `deps/{hiredis,lua,jemalloc,...}/`) have nothing to lose
   since every file compiles anyway on a cold build.
 
-  `go/internal/batch` + `mkNixggBuild`'s `batchGroups` param prototype
-  the opt-in mechanism only: a project author (or repo-inspection
-  tooling) supplies `{name, patterns}` groups, same shape as
-  `configureSrcFilter`'s `includePatterns`, and `compile.go` logs
-  which group each TU matches. It does NOT yet change what's
-  submitted — still one derivation per TU regardless of match. The
-  actual multi-output batch derivation (collecting sibling TUs across
-  concurrent shim processes, closing/flushing the batch, wiring a
-  batch output into the archive/link shim's existing drvref
-  resolution) is unbuilt.
+  `go/internal/batch` classifies a compile's source path against a
+  project author's opt-in `{name, patterns}` groups (`mkNixggBuild`'s
+  `batchGroups` param), same shape as `configureSrcFilter`'s
+  `includePatterns`. `internal/shim.deferCompileToBatch` records a
+  pending member instead of submitting a per-TU derivation, and
+  `internal/shim.tryBatchArchive` combines every pending member
+  belonging to one archive's same group into ONE derivation (N
+  compiles + 1 archive) when that archive's own `ar` invocation sees
+  them — see `go/internal/expr/batcharchive.go`'s package docstring
+  for the derivation shape. Verified at real scale:
+  `redis-batch-probe` collapses ~45 vendored-dep TUs + 5 archives into
+  5 combined derivations (158 → 113 total drvs); `mosh-batch` collapses
+  30 TUs + 6 archives into 8; ffmpeg's own per-library archives
+  (`ffmpeg-batch`) confirm the same win at ~1200 TUs where it fits (see
+  the two open gaps below).
 
-  One real gotcha found wiring even this much up: a TU's path
-  relative to "the project root" has no single stable value across a
-  build — `internal/scan` computes `ProjectRoot` per compile call (the
-  common ancestor of that call's own cwd + `-I` dirs), so the same
-  logical file resolves to a *different* relative path depending on
-  which directory `make` happened to be in when it invoked the shim
-  for that particular TU. Confirmed directly against a real redis
-  build: compiling from inside `deps/hiredis/` with no outside `-I`
-  references collapsed `ProjectRoot` down to `deps/hiredis` itself, so
-  matching against the "relative path" caught only 1 of ~40 files
-  under `deps/`. Fixed by classifying against the TU's absolute path
-  with an unanchored search instead of assuming any relative path's
-  position 0 is the project root — see `internal/batch.Classify`'s own
-  docstring.
+  Two real gaps found at ffmpeg's scale, both tracked as follow-up
+  work (not done yet):
+  - **The `MAX_ARG_STRLEN` ceiling this doc's own "Link/archive lines
+    beyond ~1700 inputs" section already names for ordinary
+    link/archive scripts applies identically to a batch's combined
+    compile+archive script** — confirmed directly: batching ffmpeg's
+    largest per-library archives (`libavcodec`/`libavformat`/
+    `libavfilter`, 350-550+ TUs each) produces a 400KB-1MB script,
+    which fails at build time with "Argument list too long." Same
+    root cause, same fixes apply (chunked env vars or a store-path
+    manifest); neither has been ported to the batch-archive script
+    path yet.
+  - **Object-basename collisions across a batch's members are now
+    handled** (`go/internal/shim/batcharchive.go`'s
+    `disambiguateOutNames`, added after this bug was found): batching
+    writes every member's compiled object into one shared scratch
+    directory before `ar` packages them, keyed by the compile's own
+    output basename — a project with two source files sharing a
+    basename in different subdirectories (ffmpeg's
+    `libavutil/cpu.c` + `libavutil/x86/cpu.c`, or
+    `libswscale/swscale.c` + `libswscale/x86/swscale.c`) used to have
+    the second compile silently overwrite the first's object before
+    packaging, producing either a downstream link failure (missing
+    symbols) or a "successful" archive quietly missing an
+    implementation. Fixed by giving each colliding member a
+    deterministic `-2`/`-3`/... suffix before its extension.
+
+  One real gotcha found wiring the classification piece up: a TU's
+  path relative to "the project root" has no single stable value
+  across a build — `internal/scan` computes `ProjectRoot` per compile
+  call (the common ancestor of that call's own cwd + `-I` dirs), so
+  the same logical file resolves to a *different* relative path
+  depending on which directory `make` happened to be in when it
+  invoked the shim for that particular TU. Confirmed directly against
+  a real redis build: compiling from inside `deps/hiredis/` with no
+  outside `-I` references collapsed `ProjectRoot` down to
+  `deps/hiredis` itself, so matching against the "relative path"
+  caught only 1 of ~40 files under `deps/`. Fixed by classifying
+  against the TU's absolute path with an unanchored search instead of
+  assuming any relative path's position 0 is the project root — see
+  `internal/batch.Classify`'s own docstring.
 
 - **Multi-target dyn-drv builds**. `mkNixggBuild` submits exactly
   one final drv. Projects with multiple binaries (lua's lua + luac,

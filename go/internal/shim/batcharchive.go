@@ -1,8 +1,10 @@
 package shim
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tbereknyei/nixgg/internal/batchmember"
 	"github.com/tbereknyei/nixgg/internal/batchpending"
@@ -93,6 +95,7 @@ func collectSameGroupMembers(inputs []string) (members []batchmember.MemberRecor
 // link.go needs to know this archive was ever batched.
 func submitCombinedArchive(cfg *toolchain.Config, l paths.Layout, archive, modifiers string, members []batchmember.MemberRecord) error {
 	outName := filepath.Base(archive)
+	members = disambiguateOutNames(members)
 
 	// Wrapper env is computed fresh, once, here — not reconciled from
 	// each member's own snapshot. They should always agree (one
@@ -119,6 +122,55 @@ func submitCombinedArchive(cfg *toolchain.Config, l paths.Layout, archive, modif
 	}
 	return submitCombinedArchiveNative(cfg, l, archive, outName, modifiers, members, storeDeps, wrapperEnv)
 }
+
+// disambiguateOutNames renames any member whose OutName collides with
+// an earlier member's own — same basename, different subdirectory
+// (e.g. libavutil/cpu.c and libavutil/x86/cpu.c both compiling to
+// "cpu.o") is a real, common shape in C projects with per-arch/per-
+// backend variant files, not a hypothetical.
+//
+// batchArchiveScript writes every member's compiled object into ONE
+// shared "$objroot" directory, keyed only by OutName (see
+// go/internal/expr/batcharchive.go's memberCompileLine/
+// batchArchiveScript) — unlike nixgg's ordinary per-TU path, where
+// each compile gets its own store output and a name collision is
+// impossible by construction. Without this, a later member's object
+// silently overwrites an earlier one's before `ar` ever runs: no
+// overwrites an earlier one's before `ar` ever runs: no build error,
+// just an archive quietly missing one implementation.
+// Confirmed directly against a real ffmpeg build — batching
+// libavutil this way dropped libavutil/x86/cpu.c's object, and the
+// final link failed with "undefined reference to `av_get_cpu_flags'"
+// (defined only in the x86 variant); batching libswscale "succeeded"
+// but `ar t` showed swscale.o/rgb2rgb.o/yuv2rgb.o each listed twice —
+// silently missing their own plain (non-x86) implementations.
+//
+// Renaming is order-stable and deterministic: the FIRST member to use
+// a basename keeps it; every subsequent collision gets "-2", "-3", ...
+// inserted before the extension (cpu.o, cpu-2.o, cpu-3.o, ...). This
+// changes the resulting archive's own member names relative to the
+// per-TU (unbatched) path — expected and harmless, since nothing
+// downstream of the archive (the link step, any consumer) looks up an
+// object by name inside it; `ar`/the linker only care about the
+// symbols each member defines, which this fix is what makes correct.
+func disambiguateOutNames(members []batchmember.MemberRecord) []batchmember.MemberRecord {
+	seen := make(map[string]int, len(members))
+	out := make([]batchmember.MemberRecord, len(members))
+	for i, m := range members {
+		n := seen[m.OutName]
+		seen[m.OutName] = n + 1
+		if n == 0 {
+			out[i] = m
+			continue
+		}
+		ext := filepath.Ext(m.OutName)
+		base := strings.TrimSuffix(m.OutName, ext)
+		m.OutName = fmt.Sprintf("%s-%d%s", base, n+1, ext)
+		out[i] = m
+	}
+	return out
+}
+
 
 // unionStoreDeps returns the deduplicated union of every member's own
 // StoreDeps plus extra (the archive's own).

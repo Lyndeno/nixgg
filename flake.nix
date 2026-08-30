@@ -564,6 +564,20 @@
               dir = ./examples/fmt;
               args = { inherit (pkgs) cmake ninja pkg-config; src = fmt-src; };
             };
+            # Same fixture, batchGroups matching every fmt source file
+            # — a real test of a documented limitation: fmt's own
+            # target IS the archive (libfmt.a), so tryBatchArchive
+            # refuses to batch it (see examples/fmt/default.nix's own
+            # comment). Expected to build correctly with batching
+            # never actually engaging.
+            fmt-batch = {
+              dir = ./examples/fmt;
+              args = {
+                inherit (pkgs) cmake ninja pkg-config;
+                src = fmt-src;
+                batchGroups = [ { name = "fmt"; patterns = [ "src/*.cc" ]; } ];
+              };
+            };
             mosh = {
               dir = ./examples/mosh;
               args = {
@@ -592,6 +606,24 @@
                 rpcHelper = true;
               };
             };
+            # Same fixture, batchGroups covering every one of mosh's 6
+            # lib*.a archives (crypto/network/terminal/util/
+            # statesync/protobufs) at once — mosh-server itself is
+            # the LINK target, not any one archive, so unlike
+            # fmt-batch/gcc-batch none of these archives collide with
+            # NIXGG_SANDBOX_TARGET; batching should actually engage
+            # for all 6.
+            mosh-batch = {
+              dir = ./examples/mosh;
+              args = {
+                inherit (pkgs)
+                  autoconf automake libtool pkg-config perl protobuf which
+                  gnum4 gnugrep gnused gawk file
+                  ncurses openssl zlib abseil-cpp;
+                src = mosh-src;
+                batchGroups = [ { name = "mosh"; patterns = [ "src/*/*.cc" ]; } ];
+              };
+            };
             redis = {
               dir = ./examples/redis;
               args = {
@@ -613,14 +645,18 @@
               };
             };
             # Same fixture, batchGroups = vendorDeps preset — a real
-            # multi-directory build to confirm internal/batch's
-            # classification actually reaches the shim and matches
-            # redis's own deps/{hiredis,linenoise,lua,jemalloc,
-            # hdr_histogram,fpconv,fast_float}/ tree correctly.
-            # Prototype scope: this only proves classification/
-            # logging works end to end, NOT a speedup — batching still
-            # submits one derivation per TU (see
-            # go/internal/batch's own docstring).
+            # multi-directory build confirming internal/batch's
+            # classification reaches the shim and matches redis's own
+            # deps/{hiredis,linenoise,lua,jemalloc,hdr_histogram,
+            # fpconv,fast_float}/ tree correctly. No longer prototype
+            # scope: batching now really engages here — 5 of the 7
+            # deps actually linked into redis-server (jemalloc/
+            # linenoise aren't part of this build's default
+            # MALLOC=libc / redis-server-only target) collapse from
+            # ~45 individual tu-*.o.drv + 5 ar-*.a.drv into 5
+            # batch-lib*.a.drv, a 158->113 total-drv reduction
+            # (verified directly via
+            # .claude/skills/nixgg-drv-graph-breakdown).
             redis-batch-probe = {
               dir = ./examples/redis;
               args = {
@@ -638,6 +674,79 @@
                 src = ffmpeg-src;
               };
             };
+            # Same fixture, batchGroups covering the 4 of ffmpeg's 8
+            # per-directory static libs that batch both cleanly AND
+            # correctly — the largest TU count in the repo (~1200),
+            # the real test of whether batching's win scales, not
+            # just whether it engages at all (that's mosh-batch's job,
+            # at 6 archives/~30 TUs).
+            #
+            # "**" is required, not "*": libavcodec/h264/,
+            # libavcodec/hevc/, libavfilter/dnn/, libavutil/tests/, and
+            # libswscale/tests/ are all real subdirectories whose
+            # objects feed the same top-level archive — a single-star
+            # pattern misses them, and since batching requires EVERY
+            # object in an archive to match the same group
+            # (go/internal/shim/batcharchive.go's
+            # collectSameGroupMembers), missing even one silently
+            # falls the whole archive back to per-TU (confirmed
+            # directly: all 5 non-trivial libs failed to batch with a
+            # single-star pattern, and batched cleanly once fixed).
+            #
+            # libavutil and libswscale were ALSO excluded here for a
+            # while: both have two source files sharing a basename in
+            # different subdirectories (libavutil/cpu.c +
+            # libavutil/x86/cpu.c; libswscale/swscale.c +
+            # libswscale/x86/swscale.c, same for
+            # rgb2rgb.c/yuv2rgb.c) — batching used to write every
+            # member's object into one shared $objroot keyed by
+            # basename ALONE, so the second compile silently
+            # overwrote the first's .o before `ar` packaged it.
+            # Confirmed directly at the time: batching libavutil
+            # produced a REAL LINK FAILURE ("undefined reference to
+            # `av_cpu_count'"/`av_get_cpu_flags'`, symbols only
+            # libavutil/x86/cpu.c defines); libswscale's own batch
+            # archive "succeeded" but `ar t` showed
+            # swscale.o/rgb2rgb.o/yuv2rgb.o each listed twice — plain,
+            # non-x86 implementations silently dropped. Fixed by
+            # go/internal/shim/batcharchive.go's
+            # disambiguateOutNames — colliding members now get a
+            # deterministic "-2"/"-3"/... suffix before the extension
+            # (cpu.o, cpu-2.o, ...) instead of clobbering each other;
+            # both are back in the patterns list below and verified
+            # to build AND run correctly (`ar t` shows both cpu.o/
+            # cpu-2.o present, `nix run .#ffmpeg-batch -- -version`
+            # prints the real banner).
+            #
+            # libavcodec/libavformat/libavfilter are STILL excluded, a
+            # separate and still-open issue: each one's combined batch
+            # script is 400KB-1MB (350-550+ TUs' worth of staged
+            # source paths in one `bash -c` argument), blowing
+            # straight through the MAX_ARG_STRLEN = 131072-byte
+            # ceiling ARCHITECTURE.md's "What we don't (yet) do"
+            # already documents for link/archive lines — confirmed
+            # directly, fails at BUILD time with "Argument list too
+            # long", silent until someone actually builds
+            # .#ffmpeg-batch. See the "Fix MAX_ARG_STRLEN limit for
+            # batchGroups on large archives" task.
+            ffmpeg-batch = {
+              dir = ./examples/ffmpeg;
+              args = {
+                inherit (pkgs) pkg-config perl nasm yasm gnumake which;
+                src = ffmpeg-src;
+                batchGroups = [
+                  {
+                    name = "ffmpeg";
+                    patterns = [
+                      "libavdevice/**/*.c"
+                      "libswresample/**/*.c"
+                      "libswscale/**/*.c"
+                      "libavutil/**/*.c"
+                    ];
+                  }
+                ];
+              };
+            };
             # GCC's own libiberty/ subdir, built via ITS standalone
             # shipped `./configure` — not gcc's top-level multi-package
             # configure.ac. See examples/gcc's docstring for why this
@@ -648,6 +757,18 @@
             gcc = {
               dir = ./examples/gcc;
               args = { src = gcc-src; };
+            };
+            # Same fixture, batchGroups matching every libiberty/*.c
+            # file — same target-is-the-archive limitation as
+            # fmt-batch (libiberty.a is this build's own submission
+            # target), on a larger (~65-member) archive. Expected to
+            # build correctly with batching never actually engaging.
+            gcc-batch = {
+              dir = ./examples/gcc;
+              args = {
+                src = gcc-src;
+                batchGroups = [ { name = "gcc"; patterns = [ "libiberty/*.c" ]; } ];
+              };
             };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the

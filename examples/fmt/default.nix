@@ -19,12 +19,22 @@
   cmake,
   ninja,
   pkg-config,
+  # batchGroups passthrough — see flake.nix's fmt-batch entry. Real
+  # test of a documented limitation: fmt's own `target` IS the
+  # archive (libfmt.a) batching would apply to, and
+  # go/internal/shim/batcharchive.go's tryBatchArchive deliberately
+  # refuses to batch whichever archive matches NIXGG_SANDBOX_TARGET
+  # (a "batch-"-named drv can't satisfy submit-output's naming
+  # contract). So fmt-batch is expected to build correctly but with
+  # batching NOT actually engaging — confirms the fallback is safe,
+  # not that batching helps here.
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "fmt";
   version = "11.0.2";
-  inherit src;
+  inherit src batchGroups;
   # libfmt.a is the "big" output; a header-only variant exists too
   # but we want the archive path exercised.
   target = "libfmt.a";
