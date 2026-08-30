@@ -39,8 +39,9 @@
   # to confirm real classification against redis's own deps/ tree
   # (hiredis/linenoise/lua/jemalloc/hdr_histogram/fpconv/fast_float —
   # exactly the vendored-and-rarely-edited case that motivated
-  # go/internal/batch). Prototype scope: classification/logging only,
-  # doesn't change what's submitted — see that package's docstring.
+  # go/internal/batch). Batching really engages here: 5 of the 7 deps
+  # (the ones actually linked into this build's redis-server target)
+  # collapse into 5 batch-lib*.a.drv derivations.
   batchGroups ? [ ],
 }:
 

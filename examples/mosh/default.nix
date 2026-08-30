@@ -34,12 +34,19 @@
   # 30-TU/6-archive fixture (the one drv-equivalence/smoke already use
   # to correctness-verify the helper's concurrent path).
   rpcHelper ? false,
+  # batchGroups passthrough — see flake.nix's mosh-batch entry, which
+  # sets this to cover every one of mosh's 6 lib*.a archives
+  # (crypto/network/terminal/util/statesync/protobufs) at once — a
+  # real multi-archive build to measure the batch-derivation feature's
+  # actual derivation-count reduction against, distinct from
+  # lua-batch's single-archive case.
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "mosh";
   version = "unstable";
-  inherit src rpcHelper;
+  inherit src rpcHelper batchGroups;
   target = "mosh-server";
   nativeBuildInputs = [
     autoconf

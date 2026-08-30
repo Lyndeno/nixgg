@@ -3,21 +3,25 @@
 // stable enough to bundle into one multi-output derivation instead of
 // nixgg's default one-derivation-per-TU.
 //
-// This package is PROTOTYPE SCOPE: it only answers "does this source
-// belong to a batch, and which one" — matching the shape of
+// This package only answers "does this source belong to a batch, and
+// which one" — matching the shape of
 // nix/configureSrcFilterPresets.nix's includePatterns (`find
 // -path`-style globs, curated per-project or per-subtree, not
-// inferred). It does not yet change what nixgg submits: compile.go
-// logs the classification and still emits one derivation per TU. The
-// actual multi-output batch derivation, the on-disk manifest that
-// collects sibling TUs across concurrent shim processes, and the
-// close/flush logic are a separate, larger follow-up — see
-// ARCHITECTURE.md's "What we don't (yet) do" for the reasoning that
-// motivated scoping it this way (batching an actively-edited directory
-// trades saved Nix per-derivation overhead for wasted real compiler
-// time on unchanged siblings; only a directory that's genuinely stable
-// relative to how often the project rebuilds is a good candidate, and
-// that judgment call belongs to the project author, not a heuristic).
+// inferred). The actual multi-output batch derivation lives
+// elsewhere: internal/shim's deferCompileToBatch records a pending
+// member (internal/batchmember/internal/batchpending) instead of
+// submitting a per-TU derivation, and internal/shim's
+// tryBatchArchive/submitCombinedArchive combine every pending member
+// belonging to one archive's same group into ONE derivation (N
+// compiles + 1 archive) when that archive's own `ar` invocation sees
+// them — see go/internal/expr/batcharchive.go's package docstring for
+// the derivation shape itself. See ARCHITECTURE.md's "What we don't
+// (yet) do" for the reasoning that motivated scoping batching this
+// way (batching an actively-edited directory trades saved Nix
+// per-derivation overhead for wasted real compiler time on unchanged
+// siblings; only a directory that's genuinely stable relative to how
+// often the project rebuilds is a good candidate, and that judgment
+// call belongs to the project author, not a heuristic).
 package batch
 
 import (

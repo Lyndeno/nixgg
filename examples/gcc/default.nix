@@ -51,12 +51,19 @@
 {
   mkNixggBuild,
   src,
+  # batchGroups passthrough — see flake.nix's gcc-batch entry. Same
+  # target-is-the-archive limitation as fmt-batch: libiberty.a is
+  # this build's own submission target, so tryBatchArchive refuses to
+  # batch it (see fmt/default.nix's own comment for why). Wired up
+  # anyway to confirm the fallback is correct on a second, larger
+  # (~65-member) archive-as-target case.
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "gcc-libiberty";
   version = "15.3.0";
-  inherit src;
+  inherit src batchGroups;
   # mkNixggBuild picks the "ar-" drv-name prefix for any target
   # ending in ".a" (fmt's libfmt.a is the existing precedent for an
   # archive-only, no-link target).
