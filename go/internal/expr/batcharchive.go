@@ -154,6 +154,19 @@ type BatchArchiveJSONParams struct {
 // (the archive itself — same single-output shape as an ordinary
 // KindArchive derivation, so downstream consumption via
 // thunk.LinkPlaceholder / sandbox.PointOutputAtDrv needs no changes).
+//
+// The script text goes into Env["batchScript"] + passAsFile, not
+// Args, same fix and same reason as assemble.Build's own
+// Env["buildScript"]: a same-group batch large enough to matter
+// (ffmpeg's per-library archives, LLVM's libLLVMSupport) embeds one
+// full compile invocation per member in the script text, and passing
+// that as `args = ["-c", script]` makes exec's own argv block exceed
+// the kernel's ARG_MAX/MAX_ARG_STRLEN ceiling — confirmed directly
+// against both real projects ("Argument list too long" at build
+// time, past ~350 members). passAsFile writes the env var's value —
+// with CA output placeholders substituted exactly as anywhere else in
+// the derivation — to a file at build time, exposed via
+// `${name}Path`, instead of ever putting it on the builder's argv.
 func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 	script := batchArchiveScript(p.Coreutils, p.AR, p.ARFlags, p.OutName, p.Members)
 	srcs := append([]string{}, p.ExtraSrcs...)
@@ -183,6 +196,8 @@ func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 		"outputHashAlgo": "sha256",
 		"outputHashMode": "nar",
 		"_storeDeps":     strings.Join(p.StoreDeps, ":"),
+		"passAsFile":     "batchScript",
+		"batchScript":    script,
 	}
 	for k, v := range p.Env {
 		env[k] = v
@@ -191,7 +206,7 @@ func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 		Name:    p.Name,
 		System:  p.System,
 		Builder: p.Bash + "/bin/bash",
-		Args:    []string{"-c", script},
+		Args:    []string{"-c", `source "$batchScriptPath"`},
 		Env:     env,
 		Inputs: JSONDrvInputs{
 			Drvs: map[string]JSONDrvRef{}, // never a sibling drv reference — see package docstring

@@ -712,23 +712,45 @@
             # go/internal/shim/batcharchive.go's
             # disambiguateOutNames — colliding members now get a
             # deterministic "-2"/"-3"/... suffix before the extension
-            # (cpu.o, cpu-2.o, ...) instead of clobbering each other;
-            # both are back in the patterns list below and verified
-            # to build AND run correctly (`ar t` shows both cpu.o/
-            # cpu-2.o present, `nix run .#ffmpeg-batch -- -version`
-            # prints the real banner).
+            # (cpu.o, cpu-2.o, ...) instead of clobbering each other.
             #
-            # libavcodec/libavformat/libavfilter are STILL excluded, a
-            # separate and still-open issue: each one's combined batch
-            # script is 400KB-1MB (350-550+ TUs' worth of staged
-            # source paths in one `bash -c` argument), blowing
-            # straight through the MAX_ARG_STRLEN = 131072-byte
-            # ceiling ARCHITECTURE.md's "What we don't (yet) do"
-            # already documents for link/archive lines — confirmed
-            # directly, fails at BUILD time with "Argument list too
-            # long", silent until someone actually builds
-            # .#ffmpeg-batch. See the "Fix MAX_ARG_STRLEN limit for
-            # batchGroups on large archives" task.
+            # libavcodec/libavformat/libavfilter were ALSO excluded for
+            # a while: each one's combined batch script is 400KB-1MB
+            # (350-550+ TUs' worth of staged source paths in one
+            # `bash -c` argument), blowing straight through the
+            # MAX_ARG_STRLEN = 131072-byte ceiling ARCHITECTURE.md's
+            # "What we don't (yet) do" already documented for
+            # link/archive lines — confirmed directly, failed at BUILD
+            # time with "Argument list too long". Fixed the same way
+            # assemble.Build already fixed the identical problem for
+            # openssl's own tree-restore script: the combined script
+            # now goes through Env["batchScript"] + passAsFile instead
+            # of Args (go/internal/expr/batcharchive.go's
+            # BatchArchiveJSON, nix/batchArchiver.nix), so Args stays a
+            # short, fixed string regardless of member count. Verified
+            # directly: libavcodec's own batch script is 1014079 bytes
+            # and now builds successfully.
+            #
+            # All 7 archives that actually exist in this build now
+            # batch (libpostproc is absent because of this build's own
+            # --disable-* configure flags, unrelated to batching) —
+            # verified: full build succeeds, `nix run .#ffmpeg-batch --
+            # -version` prints the real banner.
+            #
+            # Known real cost, not yet fixed: batching serializes every
+            # member's own compile into ONE derivation's ONE builder
+            # process with no parallelism at all (no `&`/`wait`, no
+            # `xargs -P`) — confirmed directly via `ps aux` while
+            # building libavcodec's own batch: exactly one gcc/cc1
+            # process running at a time, one core, for the whole ~350-
+            # TU batch's duration. The unbatched path gives every TU
+            # its own Nix derivation, which Nix's own scheduler runs
+            # CONCURRENTLY (max-jobs/NIX_BUILD_CORES) — that
+            # parallelism is entirely lost once TUs fold into a batch.
+            # For libavcodec's own TU count this is a real wall-clock
+            # regression versus the unbatched build, not just a
+            # derivation-count tradeoff. See the "batchGroups loses
+            # Nix's per-TU build parallelism inside a batch" task.
             ffmpeg-batch = {
               dir = ./examples/ffmpeg;
               args = {
@@ -742,6 +764,9 @@
                       "libswresample/**/*.c"
                       "libswscale/**/*.c"
                       "libavutil/**/*.c"
+                      "libavcodec/**/*.c"
+                      "libavformat/**/*.c"
+                      "libavfilter/**/*.c"
                     ];
                   }
                 ];
@@ -807,22 +832,40 @@
             # risk the way fmt-batch/gcc-batch's archive-is-the-target
             # case has.
             #
-            # libLLVMSupport is DELIBERATELY EXCLUDED, not omitted by
-            # oversight: even after fixing an earlier
-            # "Support/**/*.cpp alone silently falls the WHOLE archive
-            # back to per-TU" bug (Support/ mixes in plain .c/.S
-            # sources — regcomp.c/regexec.c's BSD regex port,
-            # rpmalloc/, and the BLAKE3/ hash implementation's per-arch
-            # .c/.S variants — and collectSameGroupMembers,
+            # libLLVMSupport was ALSO excluded here for a while: even
+            # after fixing an earlier "Support/**/*.cpp alone silently
+            # falls the WHOLE archive back to per-TU" bug (Support/
+            # mixes in plain .c/.S sources — regcomp.c/regexec.c's BSD
+            # regex port, rpmalloc/, and the BLAKE3/ hash
+            # implementation's per-arch .c/.S variants — and
+            # collectSameGroupMembers,
             # go/internal/shim/batcharchive.go, requires EVERY input to
             # ar's own invocation to be a same-group pending member),
             # Support's own combined batch script is 152853 bytes —
             # over the MAX_ARG_STRLEN = 131072-byte ceiling this
-            # repo's own ffmpeg-batch entry already hit at a similar
-            # TU count. Confirmed directly: batching it produces
-            # "error: executing '.../bash': Argument list too long" at
-            # BUILD time. See the "Fix MAX_ARG_STRLEN limit for
-            # batchGroups on large archives" task.
+            # repo's own ffmpeg-batch entry already hit at a similar TU
+            # count. Confirmed directly at the time: batching it
+            # produced "error: executing '.../bash': Argument list too
+            # long" at BUILD time.
+            #
+            # Fixed the same way assemble.Build already fixed the
+            # identical problem for openssl's own tree-restore script:
+            # the combined script now goes through Env["batchScript"] +
+            # passAsFile instead of Args
+            # (go/internal/expr/batcharchive.go's BatchArchiveJSON,
+            # nix/batchArchiver.nix), so Args stays a short, fixed
+            # string regardless of member count. Verified directly:
+            # full build succeeds, `nix run .#llvm-min-tblgen-batch --
+            # --version` prints the real LLVM banner, phase1 goes from
+            # 186 to 13 total derivations with all 3 archives batched.
+            #
+            # Same known real cost as ffmpeg-batch, not yet fixed:
+            # batching serializes all of Support's own ~142 TUs into
+            # one derivation's one builder process with no parallelism
+            # (no `&`/`wait`) — the unbatched path lets Nix's own
+            # scheduler run them concurrently. See the "batchGroups
+            # loses Nix's per-TU build parallelism inside a batch"
+            # task.
             llvm-batch = {
               dir = ./examples/llvm;
               args = {
@@ -835,6 +878,9 @@
                     patterns = [
                       "llvm/lib/Demangle/**/*.cpp"
                       "llvm/lib/TableGen/**/*.cpp"
+                      "llvm/lib/Support/**/*.cpp"
+                      "llvm/lib/Support/**/*.c"
+                      "llvm/lib/Support/**/*.S"
                     ];
                   }
                 ];

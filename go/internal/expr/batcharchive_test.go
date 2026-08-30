@@ -1,6 +1,7 @@
 package expr
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -150,6 +151,67 @@ func TestBatchArchiveJSONNeverReferencesSiblingDrv(t *testing.T) {
 	})
 	if len(drv.Inputs.Drvs) != 0 {
 		t.Errorf("Inputs.Drvs = %+v, want empty", drv.Inputs.Drvs)
+	}
+}
+
+// TestBatchArchiveJSONScriptPassedAsFile pins that the combined
+// script never lands directly in Args — it goes through
+// Env["batchScript"] + passAsFile, same mechanism and same reason as
+// assemble.Build's own Env["buildScript"] fix. Args must stay a
+// short, fixed `source "$batchScriptPath"` regardless of member
+// count.
+func TestBatchArchiveJSONScriptPassedAsFile(t *testing.T) {
+	drv := BatchArchiveJSON(BatchArchiveJSONParams{
+		Name: "batch-lib.a", OutName: "lib.a", System: "x86_64-linux",
+		Bash: "/nix/store/bash", Coreutils: "/nix/store/coreutils", AR: "/nix/store/binutils",
+		Members: testMembers(),
+	})
+	if len(drv.Args) != 2 || drv.Args[0] != "-c" || drv.Args[1] != `source "$batchScriptPath"` {
+		t.Fatalf(`Args = %v, want ["-c", "source \"$batchScriptPath\""]`, drv.Args)
+	}
+	if drv.Env["passAsFile"] != "batchScript" {
+		t.Errorf(`Env["passAsFile"] = %q, want "batchScript"`, drv.Env["passAsFile"])
+	}
+	if !strings.Contains(drv.Env["batchScript"], `-c "sds.c"`) {
+		t.Errorf("Env[\"batchScript\"] missing the actual compile script:\n%s", drv.Env["batchScript"])
+	}
+}
+
+// TestBatchArchiveJSONArgsStaySmallAtScale pins the actual fix for
+// ffmpeg's "Argument list too long" failure batching libavcodec (350+
+// members, 1MB+ combined script): with enough members, Args must
+// stay a short, fixed string no matter how large the real script
+// grows — confirmed directly against MAX_ARG_STRLEN (131072).
+func TestBatchArchiveJSONArgsStaySmallAtScale(t *testing.T) {
+	members := make([]BatchCompileMember, 900) // more than ffmpeg's largest real archive
+	for i := range members {
+		members[i] = BatchCompileMember{
+			Tool:     "cc",
+			SrcStore: fmt.Sprintf("/nix/store/%032x-src%d", i, i),
+			Source:   fmt.Sprintf("file%d.c", i),
+			OutName:  fmt.Sprintf("file%d.o", i),
+			Flags:    []string{"-O2", "-DHAVE_AV_CONFIG_H", "-std=c17"},
+		}
+	}
+	drv := BatchArchiveJSON(BatchArchiveJSONParams{
+		Name: "batch-libavcodec.a", OutName: "libavcodec.a", System: "x86_64-linux",
+		Bash: "/nix/store/bash", Coreutils: "/nix/store/coreutils", AR: "/nix/store/binutils",
+		ARFlags: "rcs", Members: members,
+	})
+
+	const maxArgStrlen = 131072 // Linux MAX_ARG_STRLEN — this is exactly the bug
+	argvSize := 0
+	for _, a := range drv.Args {
+		argvSize += len(a)
+	}
+	if argvSize > 4096 {
+		t.Errorf("Args total %d bytes across %d members — want a small, fixed size regardless of member count", argvSize, len(members))
+	}
+	if argvSize >= maxArgStrlen {
+		t.Fatalf("Args total %d bytes exceeds MAX_ARG_STRLEN (%d) — this is exactly the bug", argvSize, maxArgStrlen)
+	}
+	if len(drv.Env["batchScript"]) < maxArgStrlen {
+		t.Fatalf("test setup didn't actually exercise the bug: Env[\"batchScript\"] is only %d bytes, want > %d", len(drv.Env["batchScript"]), maxArgStrlen)
 	}
 }
 
