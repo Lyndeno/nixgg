@@ -8,12 +8,19 @@
 {
   mkNixggBuild,
   src,
+  # batchGroups passthrough — see flake.nix's lua-batch entry, which
+  # sets this so tests/batch-drv-equivalence.sh has a small (~30-TU),
+  # fast, already-in-tree fixture that's ENTIRELY one archive (liblua.a)
+  # feeding one link — the shape tryBatchArchive is built for, and
+  # small enough to be the fast/legible check redis-batch-probe's own
+  # ~150-TU build isn't.
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "lua";
   version = "5.4.7";
-  inherit src;
+  inherit src batchGroups;
   target = "lua";
   # `make linux` from src/ is upstream's Linux recipe: sets
   # SYSCFLAGS + SYSLIBS then recurses into `make all`. `all` builds

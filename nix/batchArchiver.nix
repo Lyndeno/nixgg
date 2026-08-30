@@ -54,8 +54,16 @@ let
   # docstring on why: parallel invocations racing on nixpkgs input
   # evaluation), so it can't take `lib` as a param the way the
   # flake-level stdenv wrappers do.
+  # Quoted exactly like go/internal/expr/batcharchive.go's own
+  # batchArchiveScript quotes its own `cd "<SrcStore>"` — an
+  # unquoted path literal here produced a byte-different script from
+  # the sandbox path (native mode's shell never needed the quotes to
+  # run correctly, since Nix path literals never contain spaces/shell
+  # metacharacters, but drv-hash EQUIVALENCE between the two modes
+  # requires identical script TEXT, not just equivalent behavior).
+  # Caught by tests/batch-drv-equivalence.sh.
   compileLines = builtins.concatStringsSep ""
-    (map (m: "(cd ${m.srcTree} && ${m.compileLine})\n") members);
+    (map (m: "(cd \"${m.srcTree}\" && ${m.compileLine})\n") members);
   objList = builtins.concatStringsSep " "
     (map (m: ''"$objroot/${m.outName}"'') members);
 

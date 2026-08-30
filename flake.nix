@@ -545,6 +545,21 @@
               dir = ./examples/lua;
               args = { src = lua-src; };
             };
+            # Same fixture, batchGroups matching every lua source file
+            # — the whole ~30-TU archive (liblua.a) becomes one
+            # combined batch derivation instead of 30 compiles + 1
+            # archive. Small and fast: tests/batch-drv-equivalence.sh's
+            # own dedicated native/sandbox parity check for the
+            # batch-archive shape itself, distinct from
+            # redis-batch-probe's larger, partial-match/negative-path
+            # coverage.
+            lua-batch = {
+              dir = ./examples/lua;
+              args = {
+                src = lua-src;
+                batchGroups = [ { name = "lua"; patterns = [ "src/**/*.c" ]; } ];
+              };
+            };
             fmt = {
               dir = ./examples/fmt;
               args = { inherit (pkgs) cmake ninja pkg-config; src = fmt-src; };
