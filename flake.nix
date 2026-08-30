@@ -792,6 +792,54 @@
                 src = llvm-src;
               };
             };
+            # Same fixture, batchGroups covering every libLLVM<Name>.a
+            # archive's own subdirectory (llvm/lib/Support/,
+            # llvm/lib/TableGen/, llvm/lib/IR/, llvm/lib/MC/, etc.) —
+            # the same per-subsystem-archive shape ffmpeg's per-codec
+            # libavcodec.a/libavutil.a/etc. already exercises, at
+            # LLVM's own larger scale (~2000 TUs across all 3 phases).
+            # Verified via .claude/skills/nixgg-drv-graph-breakdown
+            # before wiring the real patterns list here: phase1
+            # (llvm-min-tblgen) links exactly 3 archives —
+            # libLLVMDemangle.a, libLLVMSupport.a (142 TUs),
+            # libLLVMTableGen.a (12 TUs) — none of which are phase1's
+            # own link target, so no NIXGG_SANDBOX_TARGET collision
+            # risk the way fmt-batch/gcc-batch's archive-is-the-target
+            # case has.
+            #
+            # libLLVMSupport is DELIBERATELY EXCLUDED, not omitted by
+            # oversight: even after fixing an earlier
+            # "Support/**/*.cpp alone silently falls the WHOLE archive
+            # back to per-TU" bug (Support/ mixes in plain .c/.S
+            # sources — regcomp.c/regexec.c's BSD regex port,
+            # rpmalloc/, and the BLAKE3/ hash implementation's per-arch
+            # .c/.S variants — and collectSameGroupMembers,
+            # go/internal/shim/batcharchive.go, requires EVERY input to
+            # ar's own invocation to be a same-group pending member),
+            # Support's own combined batch script is 152853 bytes —
+            # over the MAX_ARG_STRLEN = 131072-byte ceiling this
+            # repo's own ffmpeg-batch entry already hit at a similar
+            # TU count. Confirmed directly: batching it produces
+            # "error: executing '.../bash': Argument list too long" at
+            # BUILD time. See the "Fix MAX_ARG_STRLEN limit for
+            # batchGroups on large archives" task.
+            llvm-batch = {
+              dir = ./examples/llvm;
+              args = {
+                inherit (pkgs) runCommand cmake ninja pkg-config python3 perl which
+                  libffi libxml2 ncurses zlib;
+                src = llvm-src;
+                batchGroups = [
+                  {
+                    name = "llvm";
+                    patterns = [
+                      "llvm/lib/Demangle/**/*.cpp"
+                      "llvm/lib/TableGen/**/*.cpp"
+                    ];
+                  }
+                ];
+              };
+            };
           };
 
           # name -> the example's full attrset (.result, .shell, extras).
@@ -830,6 +878,8 @@
           # these directly for isolated phase smoke-testing.
           llvm-min-tblgen = examples.llvm.llvm-min-tblgen.package;
           llvm-tblgen = examples.llvm.llvm-tblgen.package;
+          llvm-min-tblgen-batch = examples.llvm-batch.llvm-min-tblgen.package;
+          llvm-tblgen-batch = examples.llvm-batch.llvm-tblgen.package;
           two-phase-codegen = examples.two-phase.codegen.package;
 
           toolchain-json = toolchainJson;
