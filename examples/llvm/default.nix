@@ -64,6 +64,17 @@
   libxml2,
   ncurses,
   zlib,
+  # batchGroups passthrough — see flake.nix's llvm-min-tblgen-batch
+  # entry. Applied to all three phases uniformly (same param name,
+  # same patterns): each libLLVM<Name>.a archive lives in its own
+  # llvm/lib/<Name>/ subdirectory (Support, TableGen, IR, MC, CodeGen,
+  # Analysis, Target/X86, ...), the same per-subsystem-archive shape
+  # ffmpeg's per-codec libavcodec.a/libavutil.a/etc. already exercises
+  # batching against. Unlike fmt-batch/gcc-batch, none of phase1/2's
+  # own link targets (llvm-min-tblgen, llvm-tblgen) are archives
+  # themselves, so no NIXGG_SANDBOX_TARGET collision risk the way
+  # fmt/gcc's archive-is-the-target case has.
+  batchGroups ? [ ],
 }:
 
 let
@@ -99,7 +110,7 @@ let
   phase1 = mkNixggBuild {
     pname = "llvm-min-tblgen";
     version = "19.1.7";
-    inherit src;
+    inherit src batchGroups;
     target = "bin/llvm-min-tblgen";
     nativeBuildInputs = commonNativeBuildInputs;
     buildInputs = commonBuildInputs;
@@ -112,7 +123,7 @@ let
   phase2 = mkNixggBuild {
     pname = "llvm-tblgen";
     version = "19.1.7";
-    inherit src;
+    inherit src batchGroups;
     target = "bin/llvm-tblgen";
     nativeBuildInputs = commonNativeBuildInputs;
     # phase1.result gives us a real llvm-min-tblgen at
@@ -137,7 +148,7 @@ let
   phase3 = mkNixggBuild {
     pname = "llvm";
     version = "19.1.7";
-    inherit src;
+    inherit src batchGroups;
     target = "bin/llc";
     nativeBuildInputs = commonNativeBuildInputs;
     buildInputs = commonBuildInputs ++ [ toolbin ];
