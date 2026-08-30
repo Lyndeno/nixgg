@@ -84,7 +84,9 @@ derivation ({
   outputHashAlgo = "sha256";
 
   builder = "${bash}/bin/bash";
-  args = [ "-c" script ];
+  args = [ "-c" ''source "$batchScriptPath"'' ];
+  passAsFile = [ "batchScript" ];
+  batchScript = script;
 
   _storeDeps = builtins.concatStringsSep ":" storeDeps;
 } // wrapperEnv)
