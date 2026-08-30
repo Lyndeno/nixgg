@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/expr"
 	"github.com/tbereknyei/nixgg/internal/paths"
@@ -65,12 +66,31 @@ func storeInput(c classify.Result, callerPath string) (expr.Input, expr.JSONDrvI
 // pair. logPrefix names the caller in log lines ("link"/"ar");
 // passthrough runs the moment an input can't be modeled, and its
 // error is returned with ok=false.
+//
+// Before classifying, each input is checked against
+// batchpending.Path: if it's a still-deferred batch member (see
+// deferCompileToBatch), it's resolved into an ordinary per-TU
+// thunk/drv HERE, via resolvePendingMember, before classify.Target
+// ever sees it. This is what makes batching safe for every consumer
+// that ISN'T a same-group archive (archive.go's own tryBatchArchive
+// checks for all-same-group-pending BEFORE calling classifyInputs at
+// all, and only reaches this prologue when that fast path didn't
+// apply): a mixed-group archive, a direct link with no archive, or
+// any other caller of this function transparently falls back to
+// today's one-derivation-per-TU behavior for that one input, with
+// classify.Target none the wiser that the input was ever deferred.
 func classifyInputs(
-	inputs []string, altPrefix string, l paths.Layout, logPrefix string, passthrough func() error,
+	cfg *toolchain.Config, inputs []string, altPrefix string, l paths.Layout, logPrefix string, passthrough func() error,
 ) (linkInputs []expr.Input, jsonInputs []expr.JSONDrvInput, err error, ok bool) {
 	linkInputs = make([]expr.Input, 0, len(inputs))
 	jsonInputs = make([]expr.JSONDrvInput, 0, len(inputs))
 	for _, in := range inputs {
+		if batchpending.Is(in) {
+			if err := resolvePendingMember(cfg, l, in); err != nil {
+				logf("%s passthrough: resolving deferred batch member %s: %v", logPrefix, in, err)
+				return nil, nil, passthrough(), false
+			}
+		}
 		c := classify.Target(in, altPrefix, l)
 		switch c.Kind {
 		case classify.Store:

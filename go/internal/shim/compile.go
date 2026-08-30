@@ -109,12 +109,11 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return err
 	}
 
-	// Prototype scope (see internal/batch's package docstring):
-	// classify and log which opt-in batch group this TU would belong
-	// to, if any — submission is unchanged below, still one
-	// derivation per TU. Establishes the classification is correct
-	// before any of the collection/multi-output machinery a real
-	// batching implementation needs.
+	// Opt-in batch classification (see internal/batch's package
+	// docstring for the mechanism). Deferred to step 5 below, after
+	// mode.For(source) is known — a conftest/cmake-probe TU
+	// (mode.Realise) must never be deferred, since it needs a
+	// synchronous, real build right now.
 	//
 	// Classify sees srcAbs (the TU's absolute path), NOT srcRel:
 	// srcRel is relative to scanResult.ProjectRoot, which is
@@ -124,9 +123,7 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	// inside deps/hiredis/ made srcRel just "sds.c", never matching
 	// "deps/**/*.c". Classify's own unanchored search only works if
 	// it's given the real, full path to search within.
-	if group, ok := cfg.BatchGroups.Classify(srcAbs); ok {
-		logf("batch: %s -> group %q (not yet batched; submitting per-TU)", srcRel, group)
-	}
+	batchGroup, batched := cfg.BatchGroups.Classify(srcAbs)
 
 	entries := make([]stage.Entry, 0, 1+len(scanResult.Headers))
 	entries = append(entries, stage.Entry{Abs: srcAbs, Rel: srcRel})
@@ -196,6 +193,11 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return realiseAndLink(e, output, cfg, l)
 	}
 
+	if batched {
+		return deferCompileToBatch(cfg, l, batchGroup, tuID, tool.Basename(), output, srcRel,
+			srcTreeLiteral, sandboxFlags, storeDeps, wrapperEnv)
+	}
+
 	// Sandbox mode: submit a JSON drv directly to the outer daemon,
 	// symlink the output at the returned drv path. No .nix thunk on
 	// disk. Downstream link/archive shims will resolve this via
@@ -204,19 +206,32 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return compileSandbox(cfg, l, tool, tuID, filepath.Base(output), output, srcRel, sandboxFlags, storeDeps, wrapperEnvJSON)
 	}
 
-	id := thunk.Compute(e)
-	thunkPath, err := thunk.Write(l, id, e)
+	thunkPath, err := submitCompileThunk(l, e, output)
 	if err != nil {
-		return err
-	}
-	if err := thunk.LinkPlaceholder(l, output, thunkPath); err != nil {
-		return err
-	}
-	if err := thunk.RecordSymlink(l, id, output); err != nil {
 		return err
 	}
 	logf("  thunk:      %s", thunkPath)
 	return nil
+}
+
+// submitCompileThunk writes e's thunk, symlinks output at it, and
+// records the symlink — native mode's per-TU submission, factored out
+// so a later individually-resolved batch member (see
+// resolvePendingMember) can reach the identical code path Compile's
+// own native branch uses, without duplicating it.
+func submitCompileThunk(l paths.Layout, e, output string) (thunkPath string, err error) {
+	id := thunk.Compute(e)
+	thunkPath, err = thunk.Write(l, id, e)
+	if err != nil {
+		return "", err
+	}
+	if err := thunk.LinkPlaceholder(l, output, thunkPath); err != nil {
+		return "", err
+	}
+	if err := thunk.RecordSymlink(l, id, output); err != nil {
+		return "", err
+	}
+	return thunkPath, nil
 }
 
 // compileSandbox handles NIXGG_SANDBOX=1: emit a JSON drv describing
@@ -232,7 +247,7 @@ func compileSandbox(
 	tool dispatch.Tool, tuID, outName, output, srcRel string,
 	flags []string, storeDeps []string, wrapperEnvJSON string,
 ) error {
-	// 1. Upload the staged src tree to the store. Use `tuID` as the
+	// Upload the staged src tree to the store. Use `tuID` as the
 	// store-path name so this matches what native mode produces when
 	// its .nix thunk gets instantiated — same content, same name,
 	// same store path, same drv hash. See ARCHITECTURE.md on drv
@@ -241,27 +256,39 @@ func compileSandbox(
 	if err != nil {
 		return fmt.Errorf("stage src to store: %w", err)
 	}
+	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
+	if err != nil {
+		return err
+	}
+	return submitCompileSandboxDrv(cfg, tool.Basename(), outName, output, srcRel, srcStore, flags, storeDeps, wrapperEnv)
+}
 
-	// 2. Resolve toolchain roots for the drv. cfg carries the store
+// submitCompileSandboxDrv is compileSandbox's logic from AFTER the
+// src tree is already uploaded and wrapper env decoded — factored
+// out so a resolved batch member (whose src tree was uploaded once,
+// at defer time, by deferCompileToBatch, and whose WrapperEnv is
+// already a decoded map in its MemberRecord) can reach the same
+// drv-assembly/submission code without paying for a second,
+// redundant upload of unchanged content or a pointless
+// decode-then-reencode-then-redecode of the same map.
+func submitCompileSandboxDrv(
+	cfg *toolchain.Config, toolName, outName, output, srcRel, srcStore string,
+	flags []string, storeDeps []string, wrapperEnv map[string]string,
+) error {
+	// Resolve toolchain roots for the drv. cfg carries the store
 	// paths we bootstrapped from NIXGG_COMPILER_ROOT / _BASH_ROOT /
 	// _COREUTILS_ROOT.
 	bash := cfg.BashRoot
 	coreutils := cfg.CoreutilsRoot
 	compiler := cfg.CompilerRoot
 
-	// 3. Compute the drv's own $out placeholder. `builtins.placeholder
+	// Compute the drv's own $out placeholder. `builtins.placeholder
 	// "out"` is sha256("nix-output:out") base32'd. Every derivation
 	// gets the same value; the caOutputPlaceholder we compute for
 	// referring downstream is different.
 	outPlaceholder := "/" + expr.OutPlaceholderNix32
 
-	// 4. Decode wrapper env (JSON object) into map for JSONDrv.env.
-	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
-	if err != nil {
-		return err
-	}
-
-	// 5. Assemble the JSON drv.
+	// Assemble the JSON drv.
 	drv := expr.CompileJSON(expr.CompileJSONParams{
 		Name:        "tu-" + outName,
 		OutName:     outName,
@@ -269,7 +296,7 @@ func compileSandbox(
 		Bash:        bash,
 		Coreutils:   coreutils,
 		Compiler:    compiler,
-		Tool:        tool.Basename(),
+		Tool:        toolName,
 		SrcStore:    srcStore,
 		Source:      srcRel,
 		Flags:       flags,

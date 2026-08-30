@@ -10,6 +10,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/paths"
+	"github.com/tbereknyei/nixgg/internal/toolchain"
 )
 
 // TestParseLinkArgs pins the link-line parser: which tokens are inputs
@@ -384,7 +385,7 @@ func TestClassifyInputsSonameAliasUsesRealOutputName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, jsonInputs, err, ok := classifyInputs([]string{alias}, "", paths.Layout{}, "link", func() error {
+	_, jsonInputs, err, ok := classifyInputs(&toolchain.Config{}, []string{alias}, "", paths.Layout{}, "link", func() error {
 		t.Fatal("should not passthrough — the alias resolves to one of our own drvref stubs")
 		return nil
 	})

@@ -18,11 +18,12 @@ const gitRootMarker = ".git"
 // Layout resolves the standard set of cache directories from env.
 // Zero value is invalid; use Resolve.
 type Layout struct {
-	Thunks    string // .nixgg/thunks/
-	Srcs      string // .nixgg/srcs/
-	Scans     string // .nixgg/scans/
-	Symlinks  string // .nixgg/symlinks/
-	Promoted  string // .nixgg/promoted/ — sha1(abs-path) → store path
+	Thunks   string // .nixgg/thunks/
+	Srcs     string // .nixgg/srcs/
+	Scans    string // .nixgg/scans/
+	Symlinks string // .nixgg/symlinks/
+	Promoted string // .nixgg/promoted/ — sha1(abs-path) → store path
+	Batches  string // .nixgg/batches/<group>/ — pending batch member records
 }
 
 // Resolve returns the on-disk layout for the current nixgg workspace.
@@ -37,7 +38,7 @@ type Layout struct {
 //  4. Fall back to $PWD/.nixgg/thunks (no git, no ancestor .nixgg).
 //
 // Each subdir can be overridden individually via NIXGG_{SRCS,SCANS,
-// SYMLINKS,PROMOTED}_DIR.
+// SYMLINKS,PROMOTED,BATCHES}_DIR.
 func Resolve() (Layout, error) {
 	thunks := os.Getenv("NIXGG_THUNKS_DIR")
 	if thunks == "" {
@@ -58,6 +59,7 @@ func Resolve() (Layout, error) {
 		Scans:    envOr("NIXGG_SCANS_DIR", filepath.Join(parent, "scans")),
 		Symlinks: envOr("NIXGG_SYMLINKS_DIR", filepath.Join(parent, "symlinks")),
 		Promoted: envOr("NIXGG_PROMOTED_DIR", filepath.Join(parent, "promoted")),
+		Batches:  envOr("NIXGG_BATCHES_DIR", filepath.Join(parent, "batches")),
 	}, nil
 }
 

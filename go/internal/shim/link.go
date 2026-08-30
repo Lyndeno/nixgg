@@ -103,7 +103,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 
 	// Classify each input.
 	altPrefix := altStorePrefix(cfg.Store)
-	linkInputs, jsonInputs, err, ok := classifyInputs(inputs, altPrefix, l, "link", func() error {
+	linkInputs, jsonInputs, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "link", func() error {
 		return Passthrough(realTool, args)
 	})
 	if !ok {
