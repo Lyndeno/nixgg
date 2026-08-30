@@ -108,6 +108,26 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	if err != nil {
 		return err
 	}
+
+	// Prototype scope (see internal/batch's package docstring):
+	// classify and log which opt-in batch group this TU would belong
+	// to, if any — submission is unchanged below, still one
+	// derivation per TU. Establishes the classification is correct
+	// before any of the collection/multi-output machinery a real
+	// batching implementation needs.
+	//
+	// Classify sees srcAbs (the TU's absolute path), NOT srcRel:
+	// srcRel is relative to scanResult.ProjectRoot, which is
+	// recomputed per compile call (see scan.go) and can collapse down
+	// to a TU's own directory when nothing widens it — confirmed
+	// directly against a real redis build, where compiling from
+	// inside deps/hiredis/ made srcRel just "sds.c", never matching
+	// "deps/**/*.c". Classify's own unanchored search only works if
+	// it's given the real, full path to search within.
+	if group, ok := cfg.BatchGroups.Classify(srcAbs); ok {
+		logf("batch: %s -> group %q (not yet batched; submitting per-TU)", srcRel, group)
+	}
+
 	entries := make([]stage.Entry, 0, 1+len(scanResult.Headers))
 	entries = append(entries, stage.Entry{Abs: srcAbs, Rel: srcRel})
 	for _, h := range scanResult.Headers {

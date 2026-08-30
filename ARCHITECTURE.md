@@ -556,6 +556,50 @@ see "What we don't (yet) do", now resolved below).
   unrelated fork+exec-cost problem above) sends one op per
   derivation either way, same as the CLI did.
 
+- **Batching multiple TUs into one derivation** (a different idea
+  from the raw-protocol batching dismissed just above): after
+  measuring that `internal/helper`'s connection pooling doesn't help
+  (see README's "Optional: a persistent helper" section) because
+  Nix's own per-derivation overhead — forking a builder, sandboxing,
+  mounting the store — is ~10-20x the daemon handshake cost it
+  amortizes, the next lever is derivation *count* itself: bundle N
+  TUs into one multi-output derivation instead of one drv per TU.
+
+  This only pays off for source that's genuinely stable relative to
+  how often the project rebuilds — a content-addressed batch
+  derivation's hash covers every member, so touching one file forces
+  real recompilation of every unchanged sibling in the same batch.
+  Actively-edited directories would trade saved Nix scheduling
+  overhead for wasted real compiler time; vendored dependency trees
+  (redis's `deps/{hiredis,lua,jemalloc,...}/`) have nothing to lose
+  since every file compiles anyway on a cold build.
+
+  `go/internal/batch` + `mkNixggBuild`'s `batchGroups` param prototype
+  the opt-in mechanism only: a project author (or repo-inspection
+  tooling) supplies `{name, patterns}` groups, same shape as
+  `configureSrcFilter`'s `includePatterns`, and `compile.go` logs
+  which group each TU matches. It does NOT yet change what's
+  submitted — still one derivation per TU regardless of match. The
+  actual multi-output batch derivation (collecting sibling TUs across
+  concurrent shim processes, closing/flushing the batch, wiring a
+  batch output into the archive/link shim's existing drvref
+  resolution) is unbuilt.
+
+  One real gotcha found wiring even this much up: a TU's path
+  relative to "the project root" has no single stable value across a
+  build — `internal/scan` computes `ProjectRoot` per compile call (the
+  common ancestor of that call's own cwd + `-I` dirs), so the same
+  logical file resolves to a *different* relative path depending on
+  which directory `make` happened to be in when it invoked the shim
+  for that particular TU. Confirmed directly against a real redis
+  build: compiling from inside `deps/hiredis/` with no outside `-I`
+  references collapsed `ProjectRoot` down to `deps/hiredis` itself, so
+  matching against the "relative path" caught only 1 of ~40 files
+  under `deps/`. Fixed by classifying against the TU's absolute path
+  with an unanchored search instead of assuming any relative path's
+  position 0 is the project root — see `internal/batch.Classify`'s own
+  docstring.
+
 - **Multi-target dyn-drv builds**. `mkNixggBuild` submits exactly
   one final drv. Projects with multiple binaries (lua's lua + luac,
   mosh's client + server — we currently target `mosh-server`; the

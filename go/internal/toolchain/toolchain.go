@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+
+	"github.com/tbereknyei/nixgg/internal/batch"
 )
 
 // defaultSystem returns the Nix "system" string matching this Go
@@ -73,6 +75,14 @@ type Config struct {
 	// what keeps their drv hashes comparable. Empty, not an error, if
 	// unset or unparseable — storedeps then simply finds nothing.
 	KnownStorePaths []string
+
+	// Opt-in batch-group definitions from $NIXGG_BATCH_GROUPS — see
+	// internal/batch's own package docstring for the mechanism and
+	// why it's prototype-scope (classification only; compile.go logs
+	// which group a TU matched, but still submits one derivation per
+	// TU). Zero value (no groups) if unset, same "absence is not an
+	// error" convention as KnownStorePaths above.
+	BatchGroups batch.Config
 }
 
 // FromEnv reads the NIXGG_* variables. Returns an error listing every
@@ -93,6 +103,7 @@ func FromEnv() (*Config, error) {
 		c.System = defaultSystem()
 	}
 	c.KnownStorePaths = knownStorePathsFromEnv()
+	c.BatchGroups = batch.FromJSON(os.Getenv("NIXGG_BATCH_GROUPS"))
 	var missing []string
 	if c.RealCC == "" {
 		missing = append(missing, "NIXGG_REAL_CC")

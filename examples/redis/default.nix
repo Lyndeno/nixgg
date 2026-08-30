@@ -34,12 +34,20 @@
   # way mosh's own 30-TU measurement (README.md's "Optional: a
   # persistent helper" section) predicted it should.
   rpcHelper ? false,
+  # batchGroups passthrough — see flake.nix's redis-batch-probe entry,
+  # which sets this to nix/batchGroupPresets.nix's vendorDeps preset
+  # to confirm real classification against redis's own deps/ tree
+  # (hiredis/linenoise/lua/jemalloc/hdr_histogram/fpconv/fast_float —
+  # exactly the vendored-and-rarely-edited case that motivated
+  # go/internal/batch). Prototype scope: classification/logging only,
+  # doesn't change what's submitted — see that package's docstring.
+  batchGroups ? [ ],
 }:
 
 mkNixggBuild {
   pname = "redis";
   version = "8.2.2";
-  inherit src rpcHelper;
+  inherit src rpcHelper batchGroups;
   target = "redis-server";
   # Same set nixpkgs uses, plus grep/sed/awk that redis's release
   # scripts shell out to.

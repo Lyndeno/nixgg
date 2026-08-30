@@ -62,6 +62,30 @@
   # StoreAddScan and DerivationAdd each dial independently). See
   # go/internal/helper for the implementation.
   rpcHelper ? false,
+  # Opt-in, PROTOTYPE-scope batch-group declarations — see
+  # go/internal/batch's own package docstring for the mechanism and
+  # scope (classification/logging only for now; every TU still
+  # submits its own derivation regardless of which group it matches).
+  # A list of { name, patterns } — name is a short label for the
+  # group (shows up in shim logs), patterns are filepath.Match-style
+  # globs (PLUS a literal "**" segment for "zero or more path
+  # segments", see internal/batch.matchPath) matched against each
+  # compile's source path relative to the project root.
+  #
+  # This is an author/tooling judgment call, same shape as
+  # configureSrcFilter's includePatterns: nixgg doesn't infer which
+  # directories are "stable" — a project author (or a repo-inspection
+  # script computing edit frequency from git history, e.g.) supplies
+  # this list because they know which subtrees are vendored/rarely
+  # touched vs. actively worked on. See
+  # nix/batchGroupPresets.nix for a starting point covering common
+  # vendored-dependency layouts (redis-style deps/, autotools-style
+  # third_party/).
+  #
+  #   batchGroups = [
+  #     { name = "vendor"; patterns = [ "deps/**/*.c" ]; }
+  #   ];
+  batchGroups ? [ ],
 }:
 
 let
@@ -117,6 +141,12 @@ let
       ]
     );
   knownStorePathsJSON = builtins.toJSON (map toString knownStorePathInputs);
+
+  # Wire format for $NIXGG_BATCH_GROUPS — see go/internal/batch's
+  # jsonGroup for the Go-side parse. Computed once at eval time, same
+  # as knownStorePathsJSON above, so preBuild (sandbox) and shellHook
+  # (native) can't drift apart.
+  batchGroupsJSON = builtins.toJSON batchGroups;
 
   # NIXGG_* vars every shim invocation needs, in both modes. Bound once
   # so `drv` (as derivation attrs) and `shell` (as shellHook exports)
@@ -183,6 +213,7 @@ let
     NIX_LDFLAGS=$(printf '%s' "''${NIX_LDFLAGS:-}" | sed -e 's| *-rpath [^ ]*/outputs/out/lib||g' -e 's| *-rpath /nonexistent/lib||g')
     export NIX_CFLAGS_COMPILE NIX_LDFLAGS
     export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
+    export NIXGG_BATCH_GROUPS=${lib.escapeShellArg batchGroupsJSON}
   '';
 
   # rpcHelper's own preBuild/postBuild addendum. Started AFTER

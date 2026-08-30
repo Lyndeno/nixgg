@@ -332,6 +332,7 @@
             nixpkgsPath = nixpkgs;
           };
           configureSrcFilterPresets = import ./nix/configureSrcFilterPresets.nix;
+          batchGroupPresets = import ./nix/batchGroupPresets.nix;
           configureCacheExamples = {
             hello-cache = pkgs.hello.override { stdenv = configureCacheStdenv { stdenv = pkgs.stdenv; }; };
             zstd-cache = pkgs.zstd.override { stdenv = configureCacheStdenv { stdenv = pkgs.stdenv; }; };
@@ -594,6 +595,25 @@
                 inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
                 src = redis-src;
                 rpcHelper = true;
+              };
+            };
+            # Same fixture, batchGroups = vendorDeps preset — a real
+            # multi-directory build to confirm internal/batch's
+            # classification actually reaches the shim and matches
+            # redis's own deps/{hiredis,linenoise,lua,jemalloc,
+            # hdr_histogram,fpconv,fast_float}/ tree correctly.
+            # Prototype scope: this only proves classification/
+            # logging works end to end, NOT a speedup — batching still
+            # submits one derivation per TU (see
+            # go/internal/batch's own docstring).
+            redis-batch-probe = {
+              dir = ./examples/redis;
+              args = {
+                inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
+                src = redis-src;
+                batchGroups = [
+                  { name = "vendor"; patterns = batchGroupPresets.vendorDeps; }
+                ];
               };
             };
             ffmpeg = {
