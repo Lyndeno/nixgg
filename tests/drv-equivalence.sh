@@ -145,10 +145,18 @@ run_fixture() {
   if [[ "$src_input" == "example" ]]; then
     src="$nixgg_root/example"
   else
-    # Resolve the flake input's store path via `nix flake archive`.
-    # Outputs JSON like: {"inputs":{"lua-src":{"path":"/nix/store/…"}}}
-    src=$("$PATCHED_NIX/bin/nix" flake archive --json "$nixgg_root" 2>/dev/null \
-      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['inputs']['$src_input']['path'])" 2>/dev/null)
+    # Resolve just this one flake input's store path — NOT `nix flake
+    # archive`, which resolves and copies EVERY input (including
+    # large ones unrelated to this fixture, like ffmpeg-src/llvm-src/
+    # gcc-src) into whatever store NIX_CONFIG points at. Under this
+    # script's own isolated ALT_STORE that's needlessly expensive and,
+    # confirmed directly in CI (tests/batch-drv-equivalence.sh's own
+    # copy of this same pattern), can silently fail (stderr suppressed
+    # below) and report "could not resolve native src" despite the
+    # fixture's own sandbox build having already succeeded moments
+    # earlier against the very same input.
+    src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
+      --expr "(builtins.getFlake \"$nixgg_root\").inputs.\"$src_input\".outPath" 2>/dev/null)
   fi
 
   if [[ -z "$src" || ! -e "$src" ]]; then
