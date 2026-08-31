@@ -29,6 +29,23 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@v22
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      # go/'s own unit tests (internal/batch, internal/expr,
+      # internal/shim, etc.) never ran in CI before this — every one
+      # of them was previously only exercised by hand. CGO_ENABLED=0
+      # matches this repo's own build convention (ARCHITECTURE.md's
+      # "Building the binary" section); nixgg never needs cgo, and
+      # enabling it here would require a real system C compiler nix
+      # doesn't provide by default.
+      - name: Run go vet + go test
+        run: |
+          cd go
+          CGO_ENABLED=0 go vet ./...
+          CGO_ENABLED=0 go test ./...
+
       # One-time build of the builder-rpc-v0-capable Nix this flake
       # pins (see README.md's "Requirements" section) — substituted
       # from cache.nixos.org, not built from source. --accept-flake-config
@@ -91,3 +108,33 @@ jobs:
       # not every push.
       - name: Run drv-equivalence (hello only)
         run: PATCHED_NIX="$PWD/.patched-nix" ONLY=hello bash tests/drv-equivalence.sh
+
+  batch-drv-equivalence:
+    runs-on: ubuntu-latest
+    # Both fixtures together measured ~3m15s locally on a cold cache;
+    # generous headroom over that for a colder/slower CI runner.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same AppArmor userns workaround as the smoke job above — see
+      # its comment for why this is needed on ubuntu-latest.
+      - name: Allow unprivileged user namespaces (Nix sandbox needs this on ubuntu-latest)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Build patched-nix
+        run: nix build --no-eval-cache --accept-flake-config .#patched-nix -o .patched-nix
+
+      # The batch-archive Kind's own equivalence check (see
+      # go/internal/expr/batcharchive.go's package docstring for why
+      # this is separate from drv-equivalence.sh above): native and
+      # sandbox modes must produce byte-identical batch-archive drvs,
+      # and the resulting archive's own member list must be non-empty
+      # and correctly ordered. Runs both of this script's own fixtures
+      # (lua-batch: small/fast happy path; redis-batch-probe: larger,
+      # partial-match/negative-path coverage) — see the script's own
+      # header comment for why both matter.
+      - name: Run batch-drv-equivalence
+        run: PATCHED_NIX="$PWD/.patched-nix" bash tests/batch-drv-equivalence.sh
