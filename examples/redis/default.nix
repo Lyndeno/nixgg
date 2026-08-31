@@ -36,12 +36,17 @@
   rpcHelper ? false,
   # batchGroups passthrough — see flake.nix's redis-batch-probe entry,
   # which sets this to nix/batchGroupPresets.nix's vendorDeps preset
-  # to confirm real classification against redis's own deps/ tree
-  # (hiredis/linenoise/lua/jemalloc/hdr_histogram/fpconv/fast_float —
+  # to confirm real classification against redis's own deps/ tree —
   # exactly the vendored-and-rarely-edited case that motivated
-  # go/internal/batch). Batching really engages here: 5 of the 7 deps
-  # (the ones actually linked into this build's redis-server target)
-  # collapse into 5 batch-lib*.a.drv derivations.
+  # go/internal/batch. Only 5 of deps/'s 7 subtrees are reachable
+  # from this build's redis-server target at all (MALLOC=libc excludes
+  # jemalloc; linenoise is redis-cli-only), and all 5 batch cleanly:
+  # 5 of 5 collapse into 5 batch-lib*.a.drv derivations. jemalloc
+  # (its own autotools ./configure + make, a separate integration
+  # effort) and linenoise (never archived — its Makefile links
+  # linenoise.o directly as a single object, so it can never be a
+  # batch target regardless of MALLOC) are out of scope here, not
+  # missed coverage.
   batchGroups ? [ ],
 }:
 

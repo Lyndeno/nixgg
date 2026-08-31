@@ -649,14 +649,21 @@
             # classification reaches the shim and matches redis's own
             # deps/{hiredis,linenoise,lua,jemalloc,hdr_histogram,
             # fpconv,fast_float}/ tree correctly. No longer prototype
-            # scope: batching now really engages here — 5 of the 7
-            # deps actually linked into redis-server (jemalloc/
-            # linenoise aren't part of this build's default
-            # MALLOC=libc / redis-server-only target) collapse from
-            # ~45 individual tu-*.o.drv + 5 ar-*.a.drv into 5
+            # scope: batching now really engages here — 5 of deps/'s 7
+            # subtrees are reachable from redis-server at all
+            # (jemalloc needs MALLOC=jemalloc, unset here; linenoise
+            # is redis-cli-only), and all 5 batch cleanly: ~45
+            # individual tu-*.o.drv + 5 ar-*.a.drv collapse into 5
             # batch-lib*.a.drv, a 158->113 total-drv reduction
             # (verified directly via
-            # .claude/skills/nixgg-drv-graph-breakdown).
+            # .claude/skills/nixgg-drv-graph-breakdown). jemalloc and
+            # linenoise are out of scope, not missed coverage:
+            # jemalloc's own build is a separate autotools
+            # ./configure + make; linenoise's Makefile links
+            # linenoise.o directly as a single object and never
+            # archives it, so it can never be a batch target
+            # regardless of MALLOC. See examples/redis/default.nix's
+            # own batchGroups docstring.
             redis-batch-probe = {
               dir = ./examples/redis;
               args = {
