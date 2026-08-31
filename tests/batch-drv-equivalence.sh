@@ -132,10 +132,12 @@ run_fixture() {
 import json
 d = json.load(open('$nixgg_root/flake.lock'))
 print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
-" 2>/dev/null)
+")
+    echo "DEBUG: locked=$locked" >&2
     if [[ -n "$locked" ]]; then
       src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
-        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath" 2>/dev/null)
+        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath")
+      echo "DEBUG: src=$src" >&2
     fi
   fi
 
