@@ -737,20 +737,21 @@
             # verified: full build succeeds, `nix run .#ffmpeg-batch --
             # -version` prints the real banner.
             #
-            # Known real cost, not yet fixed: batching serializes every
-            # member's own compile into ONE derivation's ONE builder
-            # process with no parallelism at all (no `&`/`wait`, no
-            # `xargs -P`) — confirmed directly via `ps aux` while
-            # building libavcodec's own batch: exactly one gcc/cc1
-            # process running at a time, one core, for the whole ~350-
-            # TU batch's duration. The unbatched path gives every TU
-            # its own Nix derivation, which Nix's own scheduler runs
-            # CONCURRENTLY (max-jobs/NIX_BUILD_CORES) — that
-            # parallelism is entirely lost once TUs fold into a batch.
-            # For libavcodec's own TU count this is a real wall-clock
-            # regression versus the unbatched build, not just a
-            # derivation-count tradeoff. See the "batchGroups loses
-            # Nix's per-TU build parallelism inside a batch" task.
+            # Formerly a known real cost, now fixed: batching used to
+            # serialize every member's own compile into ONE
+            # derivation's ONE builder process with no parallelism at
+            # all — confirmed directly via `ps aux` while building
+            # libavcodec's own batch: exactly one gcc/cc1 process
+            # running at a time, one core, for the whole ~350-TU
+            # batch's duration. batchArchiveScript
+            # (go/internal/expr/batcharchive.go, mirrored byte-
+            # identically in nix/batchArchiver.nix) now backgrounds
+            # each member's compile and bounds concurrency at
+            # $NIX_BUILD_CORES via a FIFO `wait "$pid"` job runner —
+            # confirmed directly via `ps aux` while building
+            # mosh-batch: up to 18 concurrent compiler processes
+            # observed. See that file's own docstring for why FIFO
+            # wait, not `wait -n`.
             ffmpeg-batch = {
               dir = ./examples/ffmpeg;
               args = {
@@ -859,13 +860,11 @@
             # --version` prints the real LLVM banner, phase1 goes from
             # 186 to 13 total derivations with all 3 archives batched.
             #
-            # Same known real cost as ffmpeg-batch, not yet fixed:
-            # batching serializes all of Support's own ~142 TUs into
-            # one derivation's one builder process with no parallelism
-            # (no `&`/`wait`) — the unbatched path lets Nix's own
-            # scheduler run them concurrently. See the "batchGroups
-            # loses Nix's per-TU build parallelism inside a batch"
-            # task.
+            # Same formerly-known cost as ffmpeg-batch, now fixed the
+            # same way: Support's own ~142 TUs now compile with bounded
+            # concurrency (capped at $NIX_BUILD_CORES) instead of one
+            # at a time — see batchArchiveScript's own docstring
+            # (go/internal/expr/batcharchive.go).
             llvm-batch = {
               dir = ./examples/llvm;
               args = {

@@ -2,6 +2,9 @@ package expr
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -76,6 +79,153 @@ func TestBatchArchiveScriptToolAndPaths(t *testing.T) {
 	}
 	if !strings.Contains(script, `$objroot/sds.o`) || !strings.Contains(script, `$objroot/net.o`) {
 		t.Errorf("compile outputs don't land under a shared $objroot:\n%s", script)
+	}
+}
+
+// TestBatchArchiveScriptRunsConcurrently actually EXECUTES the
+// rendered script under real bash (substituting a fake "compiler"
+// that records its own start time), and confirms members run with
+// real overlapping concurrency, not strictly one at a time — pinning
+// the fix for the "one gcc/cc1 process at a time regardless of
+// available cores" regression found batching ffmpeg's libavcodec.
+// NIX_BUILD_CORES is set in the test's own env to control gg_max
+// deterministically rather than relying on the host's real core
+// count.
+func TestBatchArchiveScriptRunsConcurrently(t *testing.T) {
+	dir := t.TempDir()
+	fakeCC := filepath.Join(dir, "fakecc")
+	// Records "<nanoTime> start\n" / "<nanoTime> end\n" per invocation
+	// to a shared log, sleeping in between — real concurrency shows up
+	// as overlapping [start,end] intervals across members.
+	script := "#!/bin/sh\n" +
+		`echo "$(date +%s%N) start $1" >> "` + dir + `/log"` + "\n" +
+		"sleep 0.2\n" +
+		`echo "$(date +%s%N) end $1" >> "` + dir + `/log"` + "\n"
+	if err := os.WriteFile(fakeCC, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 6
+	members := make([]BatchCompileMember, n)
+	for i := range members {
+		srcDir := filepath.Join(dir, fmt.Sprintf("src%d", i))
+		if err := os.MkdirAll(srcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		members[i] = BatchCompileMember{
+			Tool: fakeCC, SrcStore: srcDir,
+			Source: fmt.Sprintf("m%d", i), OutName: fmt.Sprintf("m%d.o", i),
+		}
+	}
+
+	full := "#!/bin/sh\nset -e\n" + batchArchiveScript("/usr", "/usr", "rcs", "lib.a", members)
+	// Replace the real `ar` call (no libs to actually archive here)
+	// with a no-op so the test only exercises the concurrency runner.
+	full = full[:strings.Index(full, "ar D")] + "mkdir -p \"$out/lib\"; : \"$out/lib\"\n"
+
+	scriptPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Env = append(os.Environ(), "NIX_BUILD_CORES=3", "out="+dir+"/out")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script failed: %v\noutput:\n%s\nscript:\n%s", err, out, full)
+	}
+
+	logBytes, err := os.ReadFile(filepath.Join(dir, "log"))
+	if err != nil {
+		t.Fatalf("no log produced — did any member actually run? %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBytes)), "\n")
+	if len(lines) != 2*n {
+		t.Fatalf("expected %d start/end lines, got %d:\n%s", 2*n, len(lines), logBytes)
+	}
+
+	type event struct{ ts int64; kind string }
+	events := make([]event, 0, len(lines))
+	for _, l := range lines {
+		var ts int64
+		var kind, name string
+		if _, err := fmt.Sscanf(l, "%d %s %s", &ts, &kind, &name); err != nil {
+			t.Fatalf("unparseable log line %q: %v", l, err)
+		}
+		events = append(events, event{ts, kind})
+	}
+	// Real concurrency check: at some point in time, at least 2
+	// members must be simultaneously "started but not yet ended" —
+	// impossible if the runner were fully serial (one start, one end,
+	// repeat).
+	running := 0
+	maxRunning := 0
+	for _, e := range events {
+		if e.kind == "start" {
+			running++
+		} else {
+			running--
+		}
+		if running > maxRunning {
+			maxRunning = running
+		}
+	}
+	if maxRunning < 2 {
+		t.Errorf("max concurrent members observed = %d, want >= 2 — batch ran serially despite NIX_BUILD_CORES=3", maxRunning)
+	}
+	if maxRunning > 3 {
+		t.Errorf("max concurrent members observed = %d, want <= 3 (NIX_BUILD_CORES) — concurrency cap not respected", maxRunning)
+	}
+}
+
+// TestBatchArchiveScriptPropagatesFailure actually EXECUTES the
+// rendered script and confirms a single failing member anywhere in
+// the batch (not just the last-launched one) fails the WHOLE script —
+// pinning against the "plain `wait` only returns the LAST job's exit
+// status" footgun found while designing the concurrency fix.
+func TestBatchArchiveScriptPropagatesFailure(t *testing.T) {
+	dir := t.TempDir()
+	fakeCC := filepath.Join(dir, "fakecc")
+	// Fails when compiling "bad", succeeds (after a short sleep, so
+	// it's still running when later members launch) otherwise. The
+	// source name is the arg AFTER "-c" (invocation shape is
+	// `"$tool" ... -c "$source" -o "$objroot/$outName"`), not $1.
+	script := "#!/bin/sh\n" +
+		`while [ "$#" -gt 0 ]; do` + "\n" +
+		`  if [ "$1" = "-c" ]; then src="$2"; fi` + "\n" +
+		`  shift` + "\n" +
+		"done\n" +
+		`if [ "$src" = "bad" ]; then exit 1; fi` + "\n" +
+		"sleep 0.05\n"
+	if err := os.WriteFile(fakeCC, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	names := []string{"a", "b", "bad", "c", "d"}
+	members := make([]BatchCompileMember, len(names))
+	for i, name := range names {
+		srcDir := filepath.Join(dir, "src"+name)
+		if err := os.MkdirAll(srcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		members[i] = BatchCompileMember{
+			Tool: fakeCC, SrcStore: srcDir,
+			Source: name, OutName: name + ".o",
+		}
+	}
+
+	full := "#!/bin/sh\n" + batchArchiveScript("/usr", "/usr", "rcs", "lib.a", members)
+	full = full[:strings.Index(full, "ar D")] + "mkdir -p \"$out/lib\"; : \"$out/lib\"\n"
+
+	scriptPath := filepath.Join(dir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Env = append(os.Environ(), "NIX_BUILD_CORES=3", "out="+dir+"/out")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("script succeeded despite a failing member — the failure was silently swallowed\noutput:\n%s\nscript:\n%s", out, full)
 	}
 }
 
