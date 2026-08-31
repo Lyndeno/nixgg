@@ -43,11 +43,18 @@ let
   storeDeps = map pureStorePath (builtins.fromJSON storeDepsJSON);
   wrapperEnv = builtins.fromJSON wrapperEnvJSON;
 
-  # One `(cd <srcTree> && <compileLine>)` per member, in order, then
-  # one `ar` invocation over every member's own $objroot/<outName>.
-  # Mirrors go/internal/expr/batcharchive.go's batchArchiveScript
-  # exactly — this file's job is ONLY to splice in each member's own
-  # srcTree, everything else is already-resolved text from Go.
+  # One `(cd <srcTree> && <compileLine>) &` + `gg_after $!` per member,
+  # in order, then a wait-out of every still-running member, then one
+  # `ar` invocation over every member's own $objroot/<outName>. Mirrors
+  # go/internal/expr/batcharchive.go's batchArchiveScript exactly —
+  # this file's job is ONLY to splice in each member's own srcTree,
+  # everything else (including the bounded-concurrency runner itself,
+  # gg_max/gg_pids/gg_after/gg_fail) is already-resolved text from Go,
+  # copied here verbatim so native and sandbox modes can't drift. See
+  # batchArchiveScript's own docstring for why compiles run with
+  # bounded concurrency (capped at $NIX_BUILD_CORES) instead of
+  # strictly sequentially, and why the wait strategy is FIFO
+  # (`wait "$pid"` on an explicit pid) rather than `wait -n`.
   #
   # Plain builtins.concatStringsSep, not lib.concatMapStrings(Sep) —
   # this file must not depend on <nixpkgs> (see builder.nix's own
@@ -63,16 +70,46 @@ let
   # requires identical script TEXT, not just equivalent behavior).
   # Caught by tests/batch-drv-equivalence.sh.
   compileLines = builtins.concatStringsSep ""
-    (map (m: "(cd \"${m.srcTree}\" && ${m.compileLine})\n") members);
+    (map (m: "(cd \"${m.srcTree}\" && ${m.compileLine}) &\ngg_after $!\n") members);
   objList = builtins.concatStringsSep " "
     (map (m: ''"$objroot/${m.outName}"'') members);
+
+  # Byte-identical to go/internal/expr/batcharchive.go's own
+  # batchConcurrencyPreamble/batchConcurrencyDrain constants — see
+  # that file's own docstring for the full rationale. Copied verbatim
+  # rather than computed, same convention this file already uses for
+  # compileLines/objList: Go is the one place either mode's script
+  # text is authored, this file only ever splices in per-member Nix
+  # path literals.
+  concurrencyPreamble = ''
+    gg_max="''${NIX_BUILD_CORES:-1}"
+    case "$gg_max" in '''|*[!0-9]*) gg_max=1 ;; esac
+    [ "$gg_max" -ge 1 ] || gg_max=1
+    gg_pids=""
+    gg_fail=0
+    gg_after() {
+      gg_pids="$gg_pids $1"
+      set -- $gg_pids
+      if [ "$#" -ge "$gg_max" ]; then
+        wait "$1" || gg_fail=1
+        shift
+        gg_pids="$*"
+      fi
+    }
+  '';
+  concurrencyDrain = ''
+    for gg_pid in $gg_pids; do
+      wait "$gg_pid" || gg_fail=1
+    done
+    [ "$gg_fail" -eq 0 ] || exit 1
+  '';
 
   script = ''
     set -euo pipefail
     export PATH="${coreutils}/bin:${compiler}/bin"
     mkdir -p "$out/lib" .nixgg-objs
     objroot="$PWD/.nixgg-objs"
-    ${compileLines}ar D${arFlags} "$out/lib/${outName}" ${objList}
+    ${concurrencyPreamble}${compileLines}${concurrencyDrain}ar D${arFlags} "$out/lib/${outName}" ${objList}
   '';
 in
 derivation ({

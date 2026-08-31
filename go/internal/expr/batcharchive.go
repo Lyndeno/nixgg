@@ -225,26 +225,87 @@ func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 // member's own -o target stays absolute regardless of which srcTree
 // directory that member's compile runs from.
 //
-// Paths/tool names are embedded directly inside plain double quotes
-// (%s, not Go's %q — which escapes for Go/C string literals, not
-// bash), matching buildScript's own convention for the same class of
-// trusted, shell-metacharacter-free values (store paths, one of a
-// fixed small set of tool names). Flags — the one field that can
-// carry arbitrary caller-supplied text — goes through
-// shellQuoteFlags's real bash single-quote escaping, same as every
-// existing Kind (via memberCompileLine, shared with the native-mode
-// path so the two can't drift on quoting).
+// Compiles run with bounded concurrency, capped at $NIX_BUILD_CORES
+// (falls back to 1 if unset/unparseable — never divides by zero,
+// never runs more than requested). Folding N TUs into one derivation
+// trades away Nix's own per-derivation scheduling, which normally
+// runs many TUs' compiles concurrently across the whole build; without
+// this, EVERY member of a batch compiles strictly one at a time on a
+// single core — confirmed directly via `ps aux` while building
+// ffmpeg's libavcodec batch (~350 TUs): exactly one gcc/cc1 process
+// running at any moment, for the whole batch's duration, regardless of
+// how many cores were available. The FIFO wait below (oldest launched
+// member first, not "whichever finishes first") is a deliberate
+// choice, not an oversight: `wait -n` only reliably reports a job's
+// exit code if the job is STILL RUNNING when `wait -n` is called — a
+// background job that already finished before any wait touches it can
+// get silently reaped by the shell, and a later `wait -n` (with or
+// without an explicit pid list) then returns 127 ("no such job")
+// instead of the real exit code, LOSING a real compile failure
+// silently. `wait "$pid"` on an explicit, already-known pid does not
+// have this problem — confirmed directly (both failure modes
+// reproduced and fixed in isolation before wiring this in). The
+// tradeoff is head-of-line blocking under wildly uneven per-member
+// compile times, which real same-language same-project TUs rarely
+// exhibit to a degree that matters.
 func batchArchiveScript(coreutils, ar, arFlags, archiveOutName string, members []BatchCompileMember) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -euo pipefail\n")
 	fmt.Fprintf(&b, "export PATH=\"%s/bin:%s/bin\"\n", coreutils, ar)
 	b.WriteString("mkdir -p \"$out/lib\" .nixgg-objs\n")
 	b.WriteString("objroot=\"$PWD/.nixgg-objs\"\n")
+	b.WriteString(batchConcurrencyPreamble)
+	for _, m := range members {
+		fmt.Fprintf(&b, "(cd \"%s\" && %s) &\n", m.SrcStore, memberCompileLine(m))
+		b.WriteString("gg_after $!\n")
+	}
+	b.WriteString(batchConcurrencyDrain)
 	objs := make([]string, 0, len(members))
 	for _, m := range members {
-		fmt.Fprintf(&b, "(cd \"%s\" && %s)\n", m.SrcStore, memberCompileLine(m))
 		objs = append(objs, "\"$objroot/"+m.OutName+"\"")
 	}
 	fmt.Fprintf(&b, "ar D%s \"$out/lib/%s\" %s\n", arFlags, archiveOutName, strings.Join(objs, " "))
 	return b.String()
 }
+
+// batchConcurrencyPreamble/batchConcurrencyDrain implement a bounded-
+// concurrency job runner in plain POSIX-ish bash (no external tool —
+// this script's only PATH entries are coreutils + the compiler/ar
+// root). Each member backgrounds itself (`... &`) and immediately
+// calls gg_after with its own $! — gg_after can't take the member's
+// whole compound command as its own argument list (a subshell isn't
+// a valid argv), so backgrounding stays at each call site and only
+// the pid bookkeeping is shared. Once gg_pids reaches gg_max, the
+// OLDEST pid is waited on (FIFO) before returning — see
+// batchArchiveScript's own docstring for why FIFO, not `wait -n`.
+// gg_fail accumulates non-zero exit codes across the whole batch so
+// one early failure doesn't get lost behind later successes (plain
+// `wait` with no args only ever returns the LAST job's exit status,
+// which would silently swallow an earlier failure — confirmed
+// directly).
+const batchConcurrencyPreamble = `gg_max="${NIX_BUILD_CORES:-1}"
+case "$gg_max" in ''|*[!0-9]*) gg_max=1 ;; esac
+[ "$gg_max" -ge 1 ] || gg_max=1
+gg_pids=""
+gg_fail=0
+gg_after() {
+  gg_pids="$gg_pids $1"
+  set -- $gg_pids
+  if [ "$#" -ge "$gg_max" ]; then
+    wait "$1" || gg_fail=1
+    shift
+    gg_pids="$*"
+  fi
+}
+`
+
+// batchConcurrencyDrain waits out every still-running member once the
+// launch loop is done, then fails the WHOLE script if anything did —
+// deliberately after the loop, not per-member, so a later member's
+// failure is never masked by ar running anyway on a subset.
+const batchConcurrencyDrain = `for gg_pid in $gg_pids; do
+  wait "$gg_pid" || gg_fail=1
+done
+[ "$gg_fail" -eq 0 ] || exit 1
+`
+
