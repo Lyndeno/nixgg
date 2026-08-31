@@ -1,11 +1,11 @@
 # Starting-point batchGroups declarations. NOT guaranteed correct or
-# complete for any specific package — this is prototype-scope
-# classification/logging only (see go/internal/batch's own package
-# docstring): nixgg still submits one derivation per TU regardless of
-# which group a compile matches, so an over- or under-inclusive
-# pattern here has NO correctness consequence yet, unlike
-# configureSrcFilterPresets.nix's own patterns (which DO gate what's
-# visible to configure and can silently produce a stale build).
+# complete for any specific package (see go/internal/batch's own
+# package docstring): an over- or under-inclusive pattern here changes
+# derivation SHAPE (which TUs fold into a combined batch derivation
+# vs. get their own), not correctness — every matched TU still
+# compiles, unlike configureSrcFilterPresets.nix's own patterns (which
+# DO gate what's visible to configure and can silently produce a stale
+# build).
 #
 # The judgment call these presets encode is "this subtree is rarely
 # edited relative to how often the project rebuilds" — vendored/
