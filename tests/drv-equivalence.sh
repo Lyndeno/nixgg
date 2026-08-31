@@ -165,6 +165,14 @@ print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
     if [[ -n "$locked" ]]; then
       src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
         --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath" 2>/dev/null)
+      # fetchTree ran against store = local?root=$ALT_STORE (this
+      # script's own NIX_CONFIG) — the returned path lives under
+      # $ALT_STORE, not directly at /nix/store. Confirmed directly in
+      # CI via tests/batch-drv-equivalence.sh's own copy of this exact
+      # bug: the bare path can spuriously exist anyway on a machine
+      # with its own ambient /nix/store, which is why this went
+      # unnoticed in months of local-only runs.
+      [[ -n "$src" ]] && src="$ALT_STORE$src"
     fi
   fi
 

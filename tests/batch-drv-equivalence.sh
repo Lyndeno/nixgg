@@ -132,12 +132,20 @@ run_fixture() {
 import json
 d = json.load(open('$nixgg_root/flake.lock'))
 print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
-")
-    echo "DEBUG: locked=$locked" >&2
+" 2>/dev/null)
     if [[ -n "$locked" ]]; then
       src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
-        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath")
-      echo "DEBUG: src=$src" >&2
+        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath" 2>/dev/null)
+      # fetchTree ran against store = local?root=$ALT_STORE (this
+      # script's own NIX_CONFIG), so the path it returns lives under
+      # $ALT_STORE, not directly at /nix/store — same convention
+      # every other store-path reference in this script already
+      # follows (see e.g. the batch_drv/archive_path lookups below).
+      # Confirmed directly in CI: the bare path can spuriously exist
+      # anyway on a machine with its own ambient /nix/store (which
+      # masked this for months of local-only runs), but under CI's
+      # genuinely fresh store it never does.
+      [[ -n "$src" ]] && src="$ALT_STORE$src"
     fi
   fi
 
