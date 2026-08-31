@@ -117,17 +117,26 @@ run_fixture() {
   if [[ "$src_input" == "example" ]]; then
     src="$nixgg_root/example"
   else
-    # Resolve just this one flake input's store path — NOT `nix flake
-    # archive`, which resolves and copies EVERY input (including
-    # large ones unrelated to this fixture, like ffmpeg-src/llvm-src/
-    # gcc-src) into whatever store NIX_CONFIG points at. Under this
-    # script's own isolated ALT_STORE that's needlessly expensive and,
-    # confirmed directly in CI, can silently fail (stderr suppressed
-    # below) and report "could not resolve native src" despite the
-    # fixture's own sandbox build having already succeeded moments
-    # earlier against the very same input.
-    src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
-      --expr "(builtins.getFlake \"$nixgg_root\").inputs.\"$src_input\".outPath" 2>/dev/null)
+    # Resolve just this one input's locked spec straight out of
+    # flake.lock and fetch IT alone — not `nix flake archive` (which
+    # resolves/copies EVERY input) and not `builtins.getFlake` either
+    # (still has to lock the WHOLE transitive input graph — nix-15793
+    # and its own sub-inputs, ffmpeg-src, llvm-src, gcc-src — before
+    # it can hand back even one field; confirmed directly: identical
+    # failure mode to flake archive in a cold/isolated store). Every
+    # input here is `flake = false` (a plain source tree, not a
+    # flake), so its own locked node has no further inputs to chase —
+    # fetchTree on it is genuinely standalone.
+    local locked
+    locked=$(python3 -c "
+import json
+d = json.load(open('$nixgg_root/flake.lock'))
+print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
+" 2>/dev/null)
+    if [[ -n "$locked" ]]; then
+      src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
+        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath" 2>/dev/null)
+    fi
   fi
 
   if [[ -z "$src" || ! -e "$src" ]]; then
