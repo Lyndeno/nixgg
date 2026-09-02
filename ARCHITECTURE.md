@@ -589,20 +589,22 @@ see "What we don't (yet) do", now resolved below).
   5 combined derivations (158 → 113 total drvs); `mosh-batch` collapses
   30 TUs + 6 archives into 8; ffmpeg's own per-library archives
   (`ffmpeg-batch`) confirm the same win at ~1200 TUs where it fits (see
-  the two open gaps below).
+  the two gaps below, both since fixed).
 
-  Two real gaps found at ffmpeg's scale, both tracked as follow-up
-  work (not done yet):
+  Two real gaps found at ffmpeg's scale, both fixed:
   - **The `MAX_ARG_STRLEN` ceiling this doc's own "Link/archive lines
     beyond ~1700 inputs" section already names for ordinary
     link/archive scripts applies identically to a batch's combined
     compile+archive script** — confirmed directly: batching ffmpeg's
     largest per-library archives (`libavcodec`/`libavformat`/
     `libavfilter`, 350-550+ TUs each) produces a 400KB-1MB script,
-    which fails at build time with "Argument list too long." Same
-    root cause, same fixes apply (chunked env vars or a store-path
-    manifest); neither has been ported to the batch-archive script
-    path yet.
+    which failed at build time with "Argument list too long." Fixed
+    the same way `assemble.Build` already fixed the identical problem
+    for openssl's own tree-restore script: the combined script goes
+    through `Env["batchScript"]` + `passAsFile` instead of `Args`
+    (`go/internal/expr/batcharchive.go`'s `BatchArchiveJSON`,
+    `nix/batchArchiver.nix`), so `Args` stays a short, fixed string
+    regardless of member count.
   - **Object-basename collisions across a batch's members are now
     handled** (`go/internal/shim/batcharchive.go`'s
     `disambiguateOutNames`, added after this bug was found): batching
@@ -617,6 +619,21 @@ see "What we don't (yet) do", now resolved below).
     symbols) or a "successful" archive quietly missing an
     implementation. Fixed by giving each colliding member a
     deterministic `-2`/`-3`/... suffix before its extension.
+
+  A third gap, found and fixed after the two above: **folding N TUs
+  into one batch derivation traded away Nix's own per-derivation
+  build parallelism** — every member of a batch used to compile
+  strictly one at a time in the combined derivation's single builder
+  process, confirmed directly via `ps aux` while building ffmpeg's
+  libavcodec batch (exactly one gcc/cc1 process running at any moment,
+  for the whole ~350-TU batch's duration, regardless of available
+  cores). Fixed by backgrounding each member's compile and bounding
+  concurrency at `$NIX_BUILD_CORES` via a FIFO explicit-pid `wait`
+  job runner (`batchArchiveScript`'s own docstring explains why FIFO
+  wait, not `wait -n` — the latter has a real job-reaping race that
+  silently loses a compile failure). Confirmed directly against a
+  real `mosh-batch` build: up to 18 concurrent compiler processes
+  observed, versus exactly 1 before the fix.
 
   One real gotcha found wiring the classification piece up: a TU's
   path relative to "the project root" has no single stable value
