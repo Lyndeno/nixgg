@@ -687,10 +687,25 @@ see "What we don't (yet) do", now resolved below).
   written. Verified directly against a real native-mode build: real
   ndjson lines land on disk with the expected schema, and a sandbox
   build with the same `NIXGG_LOG` set writes nothing at all.
-- **Cmake/ninja target introspection** wrappers. nix-ninja
-  (github.com/pdtpartners/nix-ninja) is a full implementation of
-  this pattern for ninja graphs; we may end up interop-ing with it
-  rather than reinventing.
+- ~~Cmake/ninja target introspection~~ — **investigated, no gap
+  found**. nix-ninja (github.com/pdtpartners/nix-ninja) parses
+  `build.ninja` STATICALLY, before any compile runs, and converts
+  each Ninja build edge into its own dynamic derivation up front —
+  it needs `build.ninja` to already exist, meaning cmake/meson/etc.
+  must have already run their own configure+generate step outside
+  Nix's view. nixgg works the opposite way: it never parses a build
+  file at all. Shimming `cc`/`c++`/`ar` directly means configure,
+  generate, and build phases all flow through unmodified — cmake's
+  own ninja invocation runs exactly as it always would, and each
+  shimmed compiler call becomes a derivation reactively, as the real
+  build issues it. That's why `fmt`/`llvm` (both cmake+ninja) already
+  work with zero ninja-specific code: nixgg is agnostic to which
+  generator produced the build files, whereas nix-ninja is coupled
+  to Ninja's own graph format specifically. Interop or reimplementing
+  nix-ninja's own parsing would only matter if nixgg ever needed
+  compile-graph information BEFORE any compiler runs (e.g. to plan
+  batching ahead of time) — `internal/batch`'s own classification is
+  reactive too, so no such need exists today.
 
 ## Building the binary
 
