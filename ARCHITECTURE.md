@@ -670,9 +670,23 @@ see "What we don't (yet) do", now resolved below).
   renames. `mosh` is the real multi-target example: `.#mosh` builds
   `mosh-server` (the first `targets` entry), `.#mosh-client` builds
   the second — both confirmed as genuine, working ELF binaries.
-- **Activity log emission** (`NIXGG_LOG=/path.ndjson`). Old bash
-  version had per-shim JSON events; Go rewrite dropped it. Easy to
-  add if needed.
+- ~~Activity log emission~~ — **resolved, native mode only**.
+  `internal/activitylog`'s `Emit(event, kind, fields)` writes one
+  ndjson line per shim decision to `NIXGG_LOG=/path.ndjson`, when
+  set — the Go port of the old bash version's own `nixgg::emit`
+  (same envelope: `event`, `kind`, `ts`, `cwd`, plus whatever fields
+  the caller passes). Off by default; a build with `NIXGG_LOG` unset
+  pays zero cost.
+  A no-op under `sandbox.Enabled()`, and this is architectural, not a
+  scope choice: a `builder-rpc-v0` sandbox's own filesystem writes
+  never reach the host — confirmed directly (even a plain sandboxed
+  derivation's write to an arbitrary `/tmp/...` path lands in the
+  sandbox's own private mount, invisible once the build finishes).
+  `NIXGG_LOG` only ever worked in native mode for the old bash
+  version too, since sandbox mode didn't exist yet when it was
+  written. Verified directly against a real native-mode build: real
+  ndjson lines land on disk with the expected schema, and a sandbox
+  build with the same `NIXGG_LOG` set writes nothing at all.
 - **Cmake/ninja target introspection** wrappers. nix-ninja
   (github.com/pdtpartners/nix-ninja) is a full implementation of
   this pattern for ninja graphs; we may end up interop-ing with it
