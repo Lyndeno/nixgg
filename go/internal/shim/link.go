@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/activitylog"
 	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/dispatch"
@@ -44,6 +45,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 		switch a {
 		case "-c", "-E", "-S", "-M", "-MM":
 			logf("link passthrough: %s is a compile-family flag", a)
+			activitylog.Emit("link", "passthrough", activitylog.Fields{"reason": "compile_family_flag", "flag": a, "argv": args})
 			return Passthrough(realTool, args)
 		}
 	}
@@ -51,6 +53,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 	output, inputs, flags, group, ok := parseLinkArgs(args)
 	if !ok {
 		logf("link passthrough: unparseable link line (%s)", joinBase(args))
+		activitylog.Emit("link", "passthrough", activitylog.Fields{"reason": "unparseable", "argv": args})
 		return Passthrough(realTool, args)
 	}
 
@@ -154,6 +157,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 		return err
 	}
 	logf("  thunk:      %s", thunkPath)
+	activitylog.Emit("link", "thunk", activitylog.Fields{"output": output, "thunk": thunkPath, "inputs": inputs})
 
 	// NIXGG_AUTOFORCE=1: realise the link's DAG inline, so a plain
 	// `NIXGG_AUTOFORCE=1 make` produces real binaries in the working
@@ -518,6 +522,7 @@ func linkSandbox(
 		return err
 	}
 	logf("  drv:        %s", drvPath)
+	activitylog.Emit("link", "drv", activitylog.Fields{"output": output, "drv": drvPath, "inputs": inputs})
 
 	// Single-target builds: mkNixggBuild names the outer drv
 	// "bin-<target>.drv" to match our inner link drv's name, so no

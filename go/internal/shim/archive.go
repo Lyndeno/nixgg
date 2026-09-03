@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/activitylog"
 	"github.com/tbereknyei/nixgg/internal/expr"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
@@ -35,6 +36,7 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		// through — but silence here means a build that accelerated
 		// nothing looks exactly like one that accelerated everything.
 		logf("ar passthrough: not an archive-creating invocation (%s)", joinBase(args))
+		activitylog.Emit("ar", "passthrough", activitylog.Fields{"reason": "not_archive_creating", "argv": args})
 		return Passthrough(realARFor(cfg), args)
 	}
 
@@ -91,6 +93,7 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return err
 	}
 	logf("  thunk:      %s", thunkPath)
+	activitylog.Emit("ar", "thunk", activitylog.Fields{"archive": archive, "thunk": thunkPath, "inputs": arInputs})
 	return nil
 }
 
@@ -207,6 +210,7 @@ func archiveSandbox(
 		return err
 	}
 	logf("  drv:        %s", drvPath)
+	activitylog.Emit("ar", "drv", activitylog.Fields{"archive": archive, "drv": drvPath})
 
 	// See maybeSubmit's comment.
 	maybeSubmit(cfg, drvPath, archive, false)

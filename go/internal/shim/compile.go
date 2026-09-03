@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/activitylog"
 	"github.com/tbereknyei/nixgg/internal/dispatch"
 	"github.com/tbereknyei/nixgg/internal/expr"
 	"github.com/tbereknyei/nixgg/internal/mode"
@@ -76,6 +77,7 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		// otherwise a build where nothing is accelerated is
 		// indistinguishable from one where everything is.
 		logf("compile passthrough: not a single-TU compile (%s)", joinBase(args))
+		activitylog.Emit("compile", "passthrough", activitylog.Fields{"argv": args})
 		return Passthrough(realTool, args)
 	}
 
@@ -211,6 +213,9 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		return err
 	}
 	logf("  thunk:      %s", thunkPath)
+	activitylog.Emit("compile", "thunk", activitylog.Fields{
+		"tool": tool.Basename(), "source": source, "output": output, "thunk": thunkPath,
+	})
 	return nil
 }
 
@@ -319,6 +324,9 @@ func submitCompileSandboxDrv(
 		return err
 	}
 	logf("  drv:        %s", drvPath)
+	activitylog.Emit("compile", "drv", activitylog.Fields{
+		"tool": toolName, "source": srcRel, "output": output, "drv": drvPath,
+	})
 	return nil
 }
 

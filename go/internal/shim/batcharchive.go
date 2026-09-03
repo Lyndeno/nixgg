@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tbereknyei/nixgg/internal/activitylog"
 	"github.com/tbereknyei/nixgg/internal/batchmember"
 	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/expr"
@@ -228,6 +229,9 @@ func submitCombinedArchiveNative(cfg *toolchain.Config, l paths.Layout, archive,
 		return err
 	}
 	logf("  thunk:      %s (combined batch archive, %d members)", thunkPath, len(members))
+	activitylog.Emit("batch", "thunk", activitylog.Fields{
+		"archive": archive, "thunk": thunkPath, "members": len(members),
+	})
 	return nil
 }
 
@@ -275,6 +279,9 @@ func submitCombinedArchiveSandbox(cfg *toolchain.Config, archive, outName, modif
 		return err
 	}
 	logf("  drv:        %s (combined batch archive, %d members)", drvPath, len(members))
+	activitylog.Emit("batch", "drv", activitylog.Fields{
+		"archive": archive, "drv": drvPath, "members": len(members),
+	})
 
 	// See maybeSubmit's own comment — an archive only submits when
 	// NIXGG_SANDBOX_TARGET names it explicitly (a static-lib-only
