@@ -38,7 +38,7 @@ mkNixggBuild {
   pname = "hello";
   version = "0";
   src = exampleSrc;
-  target = "hello";
+  targets = [ { name = "hello"; path = "hello"; } ];
   # Same Makefile the native path uses. No divergent build script —
   # if it produces different drvs, that's a real bug in nixgg.
   buildCommand = "make";

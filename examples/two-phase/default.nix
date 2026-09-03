@@ -27,7 +27,7 @@ let
     pname = "two-phase-codegen";
     version = "0";
     src = codegenSrc;
-    target = "codegen";
+    targets = [ { name = "codegen"; path = "codegen"; } ];
     buildCommand = "make -j\"$NIX_BUILD_CORES\"";
   };
 
@@ -35,7 +35,7 @@ let
     pname = "two-phase-app";
     version = "0";
     src = appSrc;
-    target = "app";
+    targets = [ { name = "app"; path = "app"; } ];
     # phase1.result is a `builtins.outputOf` node; putting it in
     # buildInputs threads it through Nix's dep graph as a required
     # store path. When phase2's sandbox starts, phase1's output is

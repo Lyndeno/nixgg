@@ -64,10 +64,10 @@ mkNixggBuild {
   pname = "gcc-libiberty";
   version = "15.3.0";
   inherit src batchGroups;
-  # mkNixggBuild picks the "ar-" drv-name prefix for any target
-  # ending in ".a" (fmt's libfmt.a is the existing precedent for an
-  # archive-only, no-link target).
-  target = "libiberty.a";
+  # A target ending in ".a" is produced by the archive shim, not link
+  # — fmt's libfmt.a is the existing precedent for an archive-only,
+  # no-link target.
+  targets = [ { name = "libiberty"; path = "libiberty.a"; } ];
   buildCommand = ''
     cd libiberty
     NIXGG_BYPASS=1 ./configure --disable-shared

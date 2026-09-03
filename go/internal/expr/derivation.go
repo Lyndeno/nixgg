@@ -454,6 +454,9 @@ func (d *Derivation) ToNix(helpers string) string {
 	case KindLink:
 		fmt.Fprintf(&b, "import %s/linker.nix {\n", helpers)
 		fmt.Fprintf(&b, "  outName        = %q;\n", d.OutName)
+		if d.Name != "" {
+			fmt.Fprintf(&b, "  name           = %q;\n", d.Name)
+		}
 		fmt.Fprintf(&b, "  inputs         = %s;\n", derivInputsList(d.Inputs))
 		fmt.Fprintf(&b, "  scriptTemplate = %s;\n", nixIndentedStringLiteral(tmpl))
 		fmt.Fprintf(&b, "  markerTag      = %q;\n", tag)
@@ -465,6 +468,9 @@ func (d *Derivation) ToNix(helpers string) string {
 	case KindArchive:
 		fmt.Fprintf(&b, "import %s/archiver.nix {\n", helpers)
 		fmt.Fprintf(&b, "  outName        = %q;\n", d.OutName)
+		if d.Name != "" {
+			fmt.Fprintf(&b, "  name           = %q;\n", d.Name)
+		}
 		fmt.Fprintf(&b, "  inputs         = %s;\n", derivInputsList(d.Inputs))
 		fmt.Fprintf(&b, "  scriptTemplate = %s;\n", nixIndentedStringLiteral(tmpl))
 		fmt.Fprintf(&b, "  markerTag      = %q;\n", tag)

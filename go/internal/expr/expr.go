@@ -63,6 +63,7 @@ func Link(p LinkParams) string {
 func linkDerivation(p LinkParams) *Derivation {
 	return &Derivation{
 		Kind:             KindLink,
+		Name:             p.Name,
 		Tool:             p.Tool,
 		OutName:          p.OutName,
 		Inputs:           inputsToDeriv(p.Inputs),
@@ -79,6 +80,13 @@ type LinkParams struct {
 	Helpers string
 	Tool    string
 	OutName string
+	// Name overrides linker.nix's default "bin-<OutName>" derivation
+	// name — empty means use that default. Set by a multi-target
+	// mkNixggBuild build, whose non-primary targets need a name of
+	// the form "<outerBuildName>-<targetKey>" to satisfy Nix's own
+	// outputPathName check — see go/internal/shim/link.go's
+	// linkSandbox docstring.
+	Name    string
 	Inputs  []Input
 	Flags   []string
 	// GroupInputs wraps the input list in --start-group/--end-group.
@@ -98,6 +106,7 @@ func Archive(p ArchiveParams) string {
 func archiveDerivation(p ArchiveParams) *Derivation {
 	return &Derivation{
 		Kind:       KindArchive,
+		Name:       p.Name,
 		OutName:    p.OutName,
 		Inputs:     inputsToDeriv(p.Inputs),
 		ARFlags:    p.ARFlags,
@@ -122,8 +131,11 @@ func inputsToDeriv(xs []Input) []derivInput {
 
 // ArchiveParams is the input for one archive expression.
 type ArchiveParams struct {
-	Helpers    string
-	OutName    string
+	Helpers string
+	OutName string
+	// Name overrides archiver.nix's default "ar-<OutName>" — see
+	// LinkParams.Name's own docstring for when/why.
+	Name       string
 	Inputs     []Input
 	ARFlags    string
 	StoreDeps  []string

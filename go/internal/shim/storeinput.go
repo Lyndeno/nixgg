@@ -1,8 +1,10 @@
 package shim
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
@@ -128,7 +130,7 @@ func classifyInputs(
 	return linkInputs, jsonInputs, nil, true
 }
 
-// maybeSubmit submits drvPath as the outer derivation's "out" output
+// maybeSubmit submits drvPath as one of the outer derivation's outputs
 // iff path matches NIXGG_SANDBOX_TARGET, or TARGET is unset and
 // defaultSubmit is true.
 //
@@ -136,18 +138,111 @@ func classifyInputs(
 // artifact); archiveSandbox passes false (an archive is usually
 // intermediate, consumed by a later link — it only submits when
 // TARGET names it explicitly, e.g. a static-lib-only build).
+//
+// NIXGG_SANDBOX_TARGET has two shapes:
+//
+//   - A plain string (today's format, still the default): a single
+//     path/basename/absolute-path pattern, matched via matchesTarget.
+//     A match submits under output "out" — mkNixggBuild's single-
+//     target shape, and dynDrvStdenv's own "/nonexistent/..."
+//     never-match sentinel, both keep working unchanged.
+//   - A JSON object {"<pattern>": "<outputKey>", ...} — a multi-
+//     target mkNixggBuild build. Each key is matched the same way a
+//     plain string is; the FIRST match's value names the real output
+//     key to submit under (e.g. "mosh-server.drv"), not "out". See
+//     nix/mkNixggBuild.nix's own targets docstring for how this map
+//     is constructed and why every value ends in ".drv" — outputKey
+//     also becomes targetName (below) with LinkJSON/ArchiveJSON's
+//     Name override, so submit-output's own outputPathName(outerName,
+//     outputKey) check has a real, matching name on the submitted
+//     side too.
 func maybeSubmit(cfg *toolchain.Config, drvPath, path string, defaultSubmit bool) {
 	target := os.Getenv("NIXGG_SANDBOX_TARGET")
+	outputKey := "out"
 	submit := defaultSubmit
 	if target != "" {
-		submit = matchesTarget(target, path)
+		if targets := parseTargetMap(target); targets != nil {
+			outputKey = ""
+			for pattern, key := range targets {
+				if matchesTarget(pattern, path) {
+					outputKey = key
+					break
+				}
+			}
+			submit = outputKey != ""
+		} else {
+			submit = matchesTarget(target, path)
+		}
 	}
 	if !submit {
 		return
 	}
-	if err := sandbox.SubmitOutput(cfg, drvPath, "out"); err != nil {
+	if err := sandbox.SubmitOutput(cfg, drvPath, outputKey); err != nil {
 		logf("  submit-output: %v", err)
 	} else {
-		logf("  submitted: %s", drvPath)
+		logf("  submitted: %s (output %s)", drvPath, outputKey)
 	}
+}
+
+// parseTargetMap returns the {pattern: outputKey} map if target is
+// valid JSON for that shape, or nil if it's the plain-string format
+// (single-target). A plain string like "/nonexistent/foo" or
+// "mosh-server" is never valid JSON, so this is an unambiguous
+// dispatch — no separate env var needed.
+func parseTargetMap(target string) map[string]string {
+	var m map[string]string
+	if err := json.Unmarshal([]byte(target), &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+// targetOutputKey returns the output key path would submit under
+// per NIXGG_SANDBOX_TARGET, or "" if it wouldn't submit at all — used
+// by linkSandbox/archiveSandbox to compute the matching Name override
+// (see LinkParams.Name's own docstring) BEFORE the drv is emitted,
+// since submit-output's outputPathName check needs the two to already
+// agree at emission time, not after the fact.
+func targetOutputKey(path string) string {
+	target := os.Getenv("NIXGG_SANDBOX_TARGET")
+	if target == "" {
+		return ""
+	}
+	if targets := parseTargetMap(target); targets != nil {
+		for pattern, key := range targets {
+			if matchesTarget(pattern, path) {
+				return key
+			}
+		}
+		return ""
+	}
+	if matchesTarget(target, path) {
+		return "out"
+	}
+	return ""
+}
+
+// multiTargetName computes the Name override link.go/archive.go must
+// give their own emitted drv when path matches a NON-"out" entry in
+// NIXGG_SANDBOX_TARGET's map — i.e. one of 2+ targets sharing one
+// outer wrapper. Returns "" when path isn't a (non-"out") multi-
+// target match, meaning "use the caller's own default naming"
+// (LinkParams.Name/ArchiveParams.Name treat "" as "no override").
+//
+// Nix's own submit-output enforces outputPathName($name, key) ==
+// <the submitted drv's own real name> — confirmed directly: that
+// function is drvName + "-" + key (key stripped of ".drv", since
+// nix derivation add appends its OWN separate ".drv" to whatever
+// name it's given), with NO "bin-"/"ar-" marker anywhere in the
+// formula. $name is Nix's own env var for the outer derivation's
+// name (confirmed present for every derivation, always, not
+// something nixgg has to compute) — mkNixggBuild.nix exports it
+// into both preBuild and shellHook precisely so this lookup works
+// identically in native mode too.
+func multiTargetName(path string) string {
+	key := targetOutputKey(path)
+	if key == "" || key == "out" {
+		return ""
+	}
+	return os.Getenv("name") + "-" + strings.TrimSuffix(key, ".drv")
 }

@@ -28,7 +28,7 @@ mkNixggBuild {
   pname = "hello-helper";
   version = "0";
   src = exampleSrc;
-  target = "hello";
+  targets = [ { name = "hello"; path = "hello"; } ];
   buildCommand = "make";
   rpcHelper = true;
 }

@@ -13,6 +13,9 @@
   bashRoot      ? (import ./toolchain.nix).bashRoot,
   coreutilsRoot ? (import ./toolchain.nix).coreutilsRoot,
   outName,
+  # See linker.nix's own docstring for this param — same mechanism,
+  # default "ar-<outName>" convention preserved.
+  name ? "ar-${outName}",
   inputs,
   scriptTemplate,
   markerTag,
@@ -31,7 +34,7 @@ let
   };
 in
 derivation ({
-  name = "ar-${outName}";
+  name = name;
   system = builtins.currentSystem;
 
   __contentAddressed = true;

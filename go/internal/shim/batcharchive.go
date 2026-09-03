@@ -2,7 +2,6 @@ package shim
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -35,16 +34,16 @@ import (
 // derivation, for instance) or nil (fully submitted).
 func tryBatchArchive(cfg *toolchain.Config, l paths.Layout, archive, modifiers string, inputs []string) (handled bool, err error) {
 	// Never batch the archive that IS this build's own submission
-	// target: mkNixggBuild.nix's submit-output naming contract
-	// requires the submitted drv's basename to be exactly
-	// "ar-<target>.drv"/"bin-<target>.drv" — a "batch-"-named drv
-	// here would violate that and fail the build. See
-	// go/internal/batch's own package docstring / this feature's
-	// design notes for why this is a known, narrow gap: whichever
-	// archive happens to be the build's own target never benefits
-	// from batching, for a reason unrelated to its own group
-	// membership.
-	if sandbox.Enabled() && matchesTarget(os.Getenv("NIXGG_SANDBOX_TARGET"), archive) {
+	// target: submit-output's own naming contract requires the
+	// submitted drv's own name to match outputPathName($name,
+	// outputKey) exactly (see storeinput.go's multiTargetName
+	// docstring) — a "batch-"-named drv here would violate that and
+	// fail the build. See go/internal/batch's own package docstring /
+	// this feature's design notes for why this is a known, narrow
+	// gap: whichever archive happens to be one of the build's own
+	// targets never benefits from batching, for a reason unrelated to
+	// its own group membership.
+	if sandbox.Enabled() && targetOutputKey(archive) != "" {
 		return false, nil
 	}
 

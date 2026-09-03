@@ -100,7 +100,30 @@ run_fixture() {
     }
 
   # Set of drv hashes the sandbox produced. Filter:
-  #   - tu-*.o.drv + ar-*.a.drv + bin-*.drv (nixgg-emitted)
+  #   - tu-*.o.drv (unchanged naming) + a target's own link/archive
+  #     drv. The latter's naming changed once mkNixggBuild gained
+  #     multi-target support: every mkNixggBuild-based build now
+  #     names its OWN target drvs "<outerBuildName>-<targetKey>" (no
+  #     "bin-"/"ar-" prefix at all — see
+  #     go/internal/shim/storeinput.go's multiTargetName docstring
+  #     for why), while dynDrvStdenv/dynDrvConfigureCacheStdenv (which
+  #     never set NIXGG_SANDBOX_TARGET to the JSON-map shape) still
+  #     produce the OLD "bin-<outName>"/"ar-<outName>" names for their
+  #     own per-TU link/archive drvs. Both shapes are real and need
+  #     to match here — "^[a-z0-9]+-nixgg-" catches the former,
+  #     "^[a-z0-9]+-(bin-|ar-)" the latter.
+  #
+  #     "^[a-z0-9]+-nixgg-" ALSO matches things that aren't a target
+  #     drv at all: the outer text-hash wrapper itself (name is bare
+  #     "nixgg-<pname>", no per-target suffix) and, coincidentally,
+  #     nixgg's own toolchain build drvs (name is literally "nixgg" —
+  #     the nixgg-nix helper package, the nixgg-bin build). Both are
+  #     excluded below by outputHashMode: a real target drv is always
+  #     "nar" (see linker.nix/archiver.nix/LinkJSON/ArchiveJSON — none
+  #     of them ever use "text"); the outer wrapper is always "text"
+  #     (mkNixggBuild.nix's own dyn-drv marker); the toolchain drvs
+  #     have no outputHashMode key at all (ordinary input-addressed
+  #     derivations, not CA).
   #   - drop the outer .drv.drv wrapper (text-mode drv-producing)
   #   - drop RESOLVED variants: when Nix builds the outer .drv.drv,
   #     it rewrites each inner drv from inputDrvs-form (references
@@ -120,18 +143,23 @@ run_fixture() {
     local f="$ALT_STORE/nix/store/$base"
     [[ ! -f "$f" ]] && continue
     [[ "$base" == *.drv.drv ]] && continue
-    [[ ! "$base" =~ ^[a-z0-9]+-(tu-|ar-|bin-) ]] && continue
-    # Peek the aterm. bin-*/ar-* drvs typically reference at least
-    # one .drv in inputDrvs. tu-*.o.drv (compile) usually has an
-    # empty inputDrvs and non-empty inputSrcs (the staged src +
-    # toolchain), so we can't reject "empty inputDrvs" outright
-    # — instead, only drop resolved bin-/ar-* by name pattern
-    # (they always appear alongside the unresolved form, so we can
-    # dedup by keeping the LATER-created one? No — keep whichever
-    # references drvs in position 2).
-    if [[ "$base" =~ ^[a-z0-9]+-bin- || "$base" =~ ^[a-z0-9]+-ar- ]]; then
-      # bin-/ar- shim emits reference inputDrvs. If this drv has
-      # zero .drv refs in position 2, it's the resolved rewrite.
+    [[ ! "$base" =~ ^[a-z0-9]+-(tu-|ar-|bin-|nixgg-) ]] && continue
+    if [[ "$base" =~ ^[a-z0-9]+-nixgg- ]]; then
+      # Real target drv only if outputHashMode is "nar" — excludes
+      # the outer text-hash wrapper and nixgg's own toolchain drvs
+      # (see the comment above).
+      grep -q '"outputHashMode","nar"' "$f" 2>/dev/null || continue
+    fi
+    # Peek the aterm. A target's own link/archive drv (either naming
+    # shape) typically references at least one .drv in inputDrvs.
+    # tu-*.o.drv (compile) usually has an empty inputDrvs and non-
+    # empty inputSrcs (the staged src + toolchain), so we can't
+    # reject "empty inputDrvs" outright — instead, only drop resolved
+    # target-drv variants by name pattern (they always appear
+    # alongside the unresolved form).
+    if [[ "$base" =~ ^[a-z0-9]+-bin- || "$base" =~ ^[a-z0-9]+-ar- || "$base" =~ ^[a-z0-9]+-nixgg- ]]; then
+      # Target-drv shims emit references into inputDrvs. If this drv
+      # has zero .drv refs in position 2, it's the resolved rewrite.
       if ! head -c 500 "$f" | grep -q '\[("/nix/store/[^"]*\.drv"'; then
         continue
       fi

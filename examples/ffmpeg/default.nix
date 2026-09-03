@@ -64,7 +64,7 @@ mkNixggBuild {
   # unstripped variant sidesteps that; a downstream step could
   # realize+strip if needed, but for a build-throughput benchmark
   # the unstripped binary is what we want anyway.
-  target = "ffmpeg_g";
+  targets = [ { name = "ffmpeg_g"; path = "ffmpeg_g"; } ];
   nativeBuildInputs = [ pkg-config perl nasm yasm gnumake which ];
   buildInputs = [ ];
   buildCommand = ''
