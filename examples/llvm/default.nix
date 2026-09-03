@@ -111,7 +111,10 @@ let
     pname = "llvm-min-tblgen";
     version = "19.1.7";
     inherit src batchGroups;
-    target = "bin/llvm-min-tblgen";
+    # Key is a plain name (becomes the output key "llvm-min-tblgen.drv"
+    # — a "/" there would be an invalid Nix output name); value is the
+    # real relative path the shim matches against -o, same as before.
+    targets = [ { name = "llvm-min-tblgen"; path = "bin/llvm-min-tblgen"; } ];
     nativeBuildInputs = commonNativeBuildInputs;
     buildInputs = commonBuildInputs;
     buildCommand = ''
@@ -124,7 +127,7 @@ let
     pname = "llvm-tblgen";
     version = "19.1.7";
     inherit src batchGroups;
-    target = "bin/llvm-tblgen";
+    targets = [ { name = "llvm-tblgen"; path = "bin/llvm-tblgen"; } ];
     nativeBuildInputs = commonNativeBuildInputs;
     # phase1.result gives us a real llvm-min-tblgen at
     # ${phase1.result}/bin/llvm-min-tblgen. Mount it via buildInputs so
@@ -149,7 +152,7 @@ let
     pname = "llvm";
     version = "19.1.7";
     inherit src batchGroups;
-    target = "bin/llc";
+    targets = [ { name = "llc"; path = "bin/llc"; } ];
     nativeBuildInputs = commonNativeBuildInputs;
     buildInputs = commonBuildInputs ++ [ toolbin ];
     buildCommand = ''

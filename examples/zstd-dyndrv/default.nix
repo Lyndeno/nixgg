@@ -36,7 +36,7 @@ let
     pname = "zstd-gen-html";
     version = "0";
     src = pkgs.zstd.src;
-    target = "gen_html";
+    targets = [ { name = "gen_html"; path = "gen_html"; } ];
     buildCommand = ''
       cd contrib/gen_html
       g++ -O2 -c gen_html.cpp -o gen_html.o

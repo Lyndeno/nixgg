@@ -1,7 +1,10 @@
 # mkNixggBuild — wrap a user build command in a builder-rpc-v0
-# derivation whose output is a *derivation file* (.drv). The
-# consumer picks up the compiled artifact via
-# `builtins.outputOf drv.outPath "out"`.
+# derivation whose output is one or more *derivation files* (.drv),
+# one per declared target (see `targets` below). The consumer picks
+# up each target's compiled artifact via `builtins.outputOf
+# drv.outPath "<targetName>.drv"` — or just `.result`/`.package` for
+# the common single-target case, which stays this call's own default
+# shape (most callers have exactly one target).
 #
 # Built on stdenv.mkDerivation. Stdenv handles buildInputs →
 # NIX_LDFLAGS / NIX_CFLAGS_COMPILE / PKG_CONFIG_PATH, setup hooks
@@ -36,13 +39,38 @@
   pname,
   version ? "0",
   src,
-  # The command that produces the final artifact. Runs during the
+  # The command that produces every target. Runs during the
   # buildPhase; stdenv's setup has already handled configure hooks,
   # PATH, buildInputs → NIX_LDFLAGS etc.
   buildCommand,
-  # Path (relative or absolute) of the final artifact — the shim
-  # matches this against `-o <output>` to decide when to submit.
-  target,
+  # One entry per binary/archive this build produces — a list of
+  # { name; path; }, e.g. [ { name = "mosh-server"; path =
+  # "mosh-server"; } { name = "mosh-client"; path = "mosh-client"; }
+  # ]. `name` is this call's own label for the target (becomes the
+  # outer derivation's own output key, "<name>.drv" — see below for
+  # why the .drv suffix is load-bearing) and `path` is what the shim
+  # matches against `-o <output>` to decide which link/archive step
+  # produced it, same matching rule NIXGG_SANDBOX_TARGET always used
+  # (basename / relative / absolute).
+  #
+  # A LIST, not an attrset: order is load-bearing — the FIRST entry
+  # is "the" target for this call's own back-compat `result`/
+  # `package` (below), and Nix attrsets have no defined order
+  # (builtins.attrNames sorts alphabetically, confirmed directly: an
+  # earlier version of this param used an attrset, and mosh's own
+  # targets ended up with mosh-client silently picked as "the" result
+  # instead of mosh-server, purely because "mosh-client" < "mosh-server"
+  # alphabetically — a real, silent regression caught by
+  # tests/smoke.sh's mosh fixture).
+  #
+  # Exactly one entry is the common case (every example before this
+  # param existed had exactly one target) and remains the API's
+  # default shape to reach for — multiple entries are for a build
+  # that genuinely produces more than one binary/archive from ONE
+  # buildCommand invocation (mosh's mosh-server + mosh-client, lua's
+  # lua + luac), where splitting into N separate mkNixggBuild calls
+  # would mean N redundant full builds of the same source tree.
+  targets,
   # Passed straight through to stdenv.mkDerivation.
   nativeBuildInputs ? [ ],
   buildInputs ? [ ],
@@ -89,16 +117,39 @@
 }:
 
 let
-  targetBase = baseNameOf target;
-  # The outer derivation's name must equal the .drv basename the shim
-  # submits — Nix enforces submit-output's path-name matches
-  # outputPathName(outerName, "out"). Prefix depends on which shim
-  # produces the target: `bin-<target>` for link-produced binaries,
-  # `ar-<target>` for archive-produced static libs.
-  targetPrefix =
-    if lib.hasSuffix ".a" targetBase then "ar-"
-    else "bin-";
-  drvName = "${targetPrefix}${targetBase}.drv";
+  targetNames = map (t: t.name) targets;
+
+  # The outer derivation's own name — every target's own submitted
+  # drv is named "<outerName>-<todaysNaturalName>" (e.g.
+  # "nixgg-mosh-bin-mosh-server"), NOT the target's own name directly.
+  # This is the naming scheme submit-output's own check requires once
+  # more than one target shares an outer wrapper — see
+  # go/internal/shim/storeinput.go's maybeSubmit docstring for the
+  # full mechanism and the outputPathName math it rests on. A single-
+  # target build no longer gets the old bare "bin-<target>.drv" outer
+  # name (that shape can't generalize past one target — its own name
+  # WAS the target's name, which only worked because "out" is the one
+  # output key outputPathName leaves unsuffixed); every build,
+  # including single-target ones, now uses this "nixgg-<pname>"
+  # outer name uniformly.
+  outerName = "nixgg-${pname}";
+
+  # NIXGG_SANDBOX_TARGET's JSON-map shape (see maybeSubmit's own
+  # docstring): one entry per target, keyed by the caller's own
+  # path/basename pattern, valued by the outer output key the shim
+  # should submit under. Every value ends in ".drv" — literally part
+  # of the output KEY's own text, unrelated to nix derivation add's
+  # separate, automatic ".drv" suffix on whatever NAME it's given.
+  # Confirmed directly: outputPathName(outerName, outputKey) only
+  # omits a suffix for outputKey == "out"; every other key gets
+  # "-<outputKey>" appended verbatim, so the key itself must already
+  # carry ".drv" for the submitted leaf's own (separately, always
+  # ".drv"-suffixed) name to match.
+  sandboxTargetJSON = builtins.toJSON (
+    lib.listToAttrs (
+      map (t: lib.nameValuePair t.path "${t.name}.drv") targets
+    )
+  );
 
   # The set of "known" store-path inputs the shims are allowed to treat
   # as real references — passed to both modes as the literal JSON in
@@ -152,6 +203,20 @@ let
   # so `drv` (as derivation attrs) and `shell` (as shellHook exports)
   # can't drift apart — the same fix scrubWrapperEnv already applies to
   # NIX_CFLAGS_COMPILE/NIX_LDFLAGS.
+  #
+  # NIXGG_SANDBOX_TARGET/name are here (not just on drv's own attrs
+  # the way they used to be) because native mode's Link/Archive calls
+  # now need the SAME naming-override inputs sandbox mode's
+  # linkSandbox/archiveSandbox already had — without this, native
+  # mode would keep the old "bin-<outName>" naming forever while
+  # sandbox mode moved to "nixgg-<pname>-bin-<outName>", breaking
+  # drv-hash equivalence for EVERY build, not just multi-target ones
+  # (the outer wrapper's own name changed for single-target builds
+  # too — see outerName's own docstring). Nix already sets $name
+  # automatically for any derivation (confirmed directly); exporting
+  # it here too just keeps native mode's shellHook symmetric with
+  # what the sandbox build gets for free, since `nix develop` doesn't
+  # go through a real derivation the same way.
   toolchainEnv = {
     NIXGG_ROOT           = "${nixgg}";
     NIXGG_COMPILER_ROOT  = "${gcc}";
@@ -161,6 +226,8 @@ let
     NIXGG_REAL_CC        = "${gcc}/bin/g++";
     NIXGG_NIX            = "${patchedNix}/bin/nix";
     NIXGG_NIX_HELPERS    = "${nixHelpers}";
+    NIXGG_SANDBOX_TARGET = sandboxTargetJSON;
+    name                 = outerName;
   };
   toolchainEnvShellHook = lib.concatStrings (
     lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}\n") toolchainEnv
@@ -252,13 +319,25 @@ let
 
   drv = stdenv.mkDerivation (
     {
-      name = drvName;
+      name = outerName;
       inherit src;
       inherit nativeBuildInputs buildInputs propagatedBuildInputs;
 
       # builder-rpc-v0 wants $out unset. /nonexistent keeps stdenv's
       # _assignFirst happy while making any actual write visibly fail.
+      # `out` stays a plain derivation ATTRIBUTE (satisfying
+      # _assignFirst's need for some bash-legal env var) but is
+      # deliberately absent from `outputs` below — every real target
+      # gets its own "<name>.drv" key instead (see sandboxTargetJSON
+      # above), and Nix requires every declared output to actually be
+      # submitted; confirmed directly that a declared-but-never-
+      # submitted "out" fails the whole build with "failed to submit
+      # output path for 'out'". A dotted name like "mosh-server.drv"
+      # isn't a legal bash identifier either way, so `out` couldn't
+      # double as one of the real targets' own var even if we wanted
+      # it to.
       out = "/nonexistent";
+      outputs = map (n: "${n}.drv") targetNames;
 
       # We set our own build phase; skip cd-into-src (we do that
       # ourselves after copying to a writable location), install, fixup.
@@ -285,11 +364,11 @@ let
         extra-experimental-features = nix-command ca-derivations dynamic-derivations
       '';
 
-      # NIXGG_* the shims read. Toolchain roots come from toolchainEnv
-      # (merged below) so they can't drift from shell's shellHook.
+      # NIXGG_* the shims read. Toolchain roots — and NIXGG_SANDBOX_TARGET
+      # /name — come from toolchainEnv (merged below) so they can't
+      # drift from shell's shellHook.
       NIXGG_STORE          = "auto";
       NIXGG_SANDBOX        = "1";
-      NIXGG_SANDBOX_TARGET = target;
       # Raw worker-protocol client for the sandbox's own daemon socket
       # (internal/rpc), replacing per-call fork+exec of `nix
       # derivation add`/`nix store add --scan`/`nix store
@@ -336,7 +415,7 @@ let
   # -isystem / -L. The setup-hook's -rpath <outputs>/out/lib and
   # -frandom-seed noise gets scrubbed below.
   shell = mkShell {
-    name = "${drvName}-shell";
+    name = "${outerName}-shell";
     inherit nativeBuildInputs buildInputs propagatedBuildInputs;
     # The exact command string the sandbox runs, passed through so
     # tests/drv-equivalence.sh can replay it natively without
@@ -370,35 +449,58 @@ let
   # to the compile time that produced it.
   #
   # mainProgram only makes sense for something FHS placed under bin/
-  # — a link output. An archive (target ending in .a) has no program
-  # to run; leaving meta.mainProgram unset there means `nix run` fails
-  # with Nix's own "does not have meta.mainProgram" rather than
-  # nixgg claiming a program that doesn't exist.
-  isProgram = targetPrefix == "bin-";
+  # — a link output. An archive (a target's own path ending in .a)
+  # has no program to run; leaving meta.mainProgram unset there means
+  # `nix run` fails with Nix's own "does not have meta.mainProgram"
+  # rather than nixgg claiming a program that doesn't exist.
+  isProgramTarget = path: !(lib.hasSuffix ".a" (baseNameOf path));
 
-  # The dyn-drv chain's final artifact, as a string with store context.
-  # Computed once: used both as the legacy `result` attr and as
-  # `package`'s installPhase source.
-  result = builtins.outputOf drv.outPath "out";
+  # One outputOf placeholder + one copying package per target — see
+  # targets' own docstring. results/packages are the multi-target-
+  # native shape; result/package (below) stay as the single-target
+  # shape for every caller that has exactly one entry in `targets`.
+  #
+  # drv."<name>.drv" (NOT drv.outPath) is this target's own output
+  # attribute on the multi-output outer derivation — each carries its
+  # own .outPath/.drvPath, confirmed directly (`d ? "mosh-server.drv"`
+  # is true, and `(d."mosh-server.drv").outPath` resolves to that
+  # output's own placeholder, distinct per output). outputOf's own
+  # second argument is "out" — the INNER link/archive drv's own
+  # single output name (every inner drv this Kind ever emits has
+  # exactly one output called "out"), NOT the outer key again.
+  results = lib.listToAttrs (
+    map (t: lib.nameValuePair t.name (builtins.outputOf drv."${t.name}.drv".outPath "out")) targets
+  );
+  packages = lib.listToAttrs (
+    map (t: lib.nameValuePair t.name (
+      stdenv.mkDerivation ({
+        pname = t.name;
+        version = "0";
+        dontUnpack = true;
+        installPhase = ''
+          mkdir -p "$out"
+          cp -a ${results.${t.name}}/. "$out/"
+        '';
+        passthru = { inherit drv shell packages results; result = results.${t.name}; };
+      } // lib.optionalAttrs (isProgramTarget t.path) {
+        meta.mainProgram = t.name;
+      })
+    )) targets
+  );
+
+  # "The" target for the result/package back-compat shape below: the
+  # FIRST entry in `targets` — a LIST, so this is unambiguous and
+  # caller-controlled (unlike an attrset, whose iteration order isn't
+  # the declaration order — see targets' own docstring for the real
+  # regression this caused). A multi-target caller should still
+  # prefer packages.<name>/results.<name> by name for anything beyond
+  # "give me the one the caller cares about most".
+  primaryTargetName = (builtins.head targets).name;
 in
 {
-  inherit drv shell result;
+  inherit drv shell results packages;
 
-  # The proper derivation. `nix build .#foo` / `nix run .#foo` /
-  # `nix profile install .#foo` all work against this the way they do
-  # for any other Nix package.
-  package = stdenv.mkDerivation {
-    pname = targetBase;
-    version = "0";
-    dontUnpack = true;
-    installPhase = ''
-      mkdir -p "$out"
-      cp -a ${result}/. "$out/"
-    '';
-    # `.result` stays reachable as `.#foo.result` even though `.#foo`
-    # is now this derivation rather than the string itself.
-    passthru = { inherit drv shell result; };
-  } // lib.optionalAttrs isProgram {
-    meta.mainProgram = targetBase;
-  };
+  # Back-compat shape: the FIRST target's own result/package.
+  result = results.${primaryTargetName};
+  package = packages.${primaryTargetName};
 }

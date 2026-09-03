@@ -128,6 +128,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 	}
 	e := expr.Link(expr.LinkParams{
 		Helpers:          cfg.Helpers,
+		Name:             multiTargetName(output),
 		Tool:             tool.Basename(),
 		OutName:          filepath.Base(output),
 		Inputs:           linkInputs,
@@ -454,6 +455,15 @@ func joinBase(inputs []string) string {
 // output). Other link steps just add their drvs to the store without
 // submitting; the consumer's `builtins.outputOf` reaches them
 // transitively through the target's inputs.drvs.
+//
+// A multi-target build (NIXGG_SANDBOX_TARGET is the JSON-map shape —
+// see maybeSubmit's docstring) needs this link's own drv NAMED to
+// match Nix's outputPathName($name, outputKey) check, not just
+// submitted under the right key: $name (the outer wrapper's own
+// derivation name, e.g. "nixgg-mosh") comes from Nix's own env var of
+// that name, always present. See LinkJSONParams.Name's docstring for
+// why "bin-<outName>" alone isn't enough once there's more than one
+// target sharing an outer wrapper.
 func linkSandbox(
 	cfg *toolchain.Config,
 	tool dispatch.Tool,
@@ -478,8 +488,12 @@ func linkSandbox(
 	if inlineFilesStore != "" {
 		extraSrcs = append(extraSrcs, baseNameOf(inlineFilesStore))
 	}
+	name := "bin-" + outName
+	if override := multiTargetName(output); override != "" {
+		name = override
+	}
 	drv := expr.LinkJSON(expr.LinkJSONParams{
-		Name:             "bin-" + outName,
+		Name:             name,
 		OutName:          outName,
 		System:           cfg.System,
 		Bash:             cfg.BashRoot,
@@ -505,8 +519,10 @@ func linkSandbox(
 	}
 	logf("  drv:        %s", drvPath)
 
-	// mkNixggBuild names the outer drv "bin-<target>.drv" to match our
-	// inner link drv's name, so no rename is needed.
+	// Single-target builds: mkNixggBuild names the outer drv
+	// "bin-<target>.drv" to match our inner link drv's name, so no
+	// rename is needed there — the `name` override above only
+	// triggers for a matched multi-target key.
 	maybeSubmit(cfg, drvPath, output, true)
 	return nil
 }

@@ -650,12 +650,26 @@ see "What we don't (yet) do", now resolved below).
   assuming any relative path's position 0 is the project root — see
   `internal/batch.Classify`'s own docstring.
 
-- **Multi-target dyn-drv builds**. `mkNixggBuild` submits exactly
-  one final drv. Projects with multiple binaries (lua's lua + luac,
-  mosh's client + server — we currently target `mosh-server`; the
-  `mosh-client` link runs through the shim but never gets submitted)
-  need one `mkNixggBuild` call per target. A single-outer,
-  multi-drv-output shape is possible but requires more plumbing.
+- ~~Multi-target dyn-drv builds~~ — **resolved**. `mkNixggBuild`
+  used to submit exactly one final drv; a project with multiple
+  binaries from one build (lua's lua + luac, mosh's client + server)
+  needed one `mkNixggBuild` call per target, discarding every other
+  link. `targets` is now a list of `{ name; path; }` (order load-
+  bearing — the first entry is "the" back-compat `result`/`package`);
+  the outer derivation gets one output per target, named
+  `"<name>.drv"`, and each target's own link/archive drv is renamed
+  `"<outerBuildName>-<targetName>"` (no `bin-`/`ar-` prefix) so its
+  real name matches Nix's own `outputPathName($name, outputKey)`
+  check, which `submit-output` enforces server-side — confirmed
+  directly against a real builder-rpc-v0 sandbox before wiring it in
+  (see `go/internal/shim/storeinput.go`'s `multiTargetName`
+  docstring for the exact formula). Shared intermediate archives
+  underneath (e.g. mosh's `libmoshcrypto.a`) keep their original
+  naming and stay fully shared across every target that links
+  against them — only each target's own final link/archive drv
+  renames. `mosh` is the real multi-target example: `.#mosh` builds
+  `mosh-server` (the first `targets` entry), `.#mosh-client` builds
+  the second — both confirmed as genuine, working ELF binaries.
 - **Activity log emission** (`NIXGG_LOG=/path.ndjson`). Old bash
   version had per-shim JSON events; Go rewrite dropped it. Easy to
   add if needed.

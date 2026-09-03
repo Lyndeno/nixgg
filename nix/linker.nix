@@ -16,6 +16,14 @@
   bashRoot      ? (import ./toolchain.nix).bashRoot,
   coreutilsRoot ? (import ./toolchain.nix).coreutilsRoot,
   outName,
+  # The derivation's own name — defaults to today's "bin-<outName>"
+  # convention. A multi-target mkNixggBuild build overrides this to
+  # "<outerBuildName>-<targetKey>" instead, so that Nix's own
+  # outputPathName(outerName, outputKey) check (which
+  # `submit-output` enforces server-side) has a real name to match —
+  # see go/internal/shim/link.go's linkSandbox docstring for the
+  # full mechanism.
+  name ? "bin-${outName}",
   inputs,
   scriptTemplate,
   markerTag,
@@ -41,7 +49,7 @@ let
   };
 in
 derivation ({
-  name = "bin-${outName}";
+  name = name;
   system = builtins.currentSystem;
 
   __contentAddressed = true;

@@ -37,7 +37,7 @@ mkNixggBuild {
   inherit src batchGroups;
   # libfmt.a is the "big" output; a header-only variant exists too
   # but we want the archive path exercised.
-  target = "libfmt.a";
+  targets = [ { name = "libfmt"; path = "libfmt.a"; } ];
   nativeBuildInputs = [ cmake ninja pkg-config ];
   buildCommand = ''
     # Configure runs with NIXGG_BYPASS=1 so cmake's compiler probes

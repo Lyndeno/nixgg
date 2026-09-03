@@ -164,7 +164,7 @@ can serve `builder-rpc-v0`. Both are shown below.
         pname = "myproject";
         version = "0.1.0";
         src = ./.;
-        target = "myproject";      # basename the link shim submits as `out`
+        targets = [ { name = "myproject"; path = "myproject"; } ];
         nativeBuildInputs = [ pkgs.pkg-config ];
         buildInputs = [ pkgs.zlib ];
         buildCommand = ''
@@ -204,7 +204,7 @@ read `examples/llvm/default.nix`: that needs two or more chained
 | `pname` | yes | naming only |
 | `version` | no (default `"0"`) | naming only |
 | `src` | yes | the source tree |
-| `target` | yes | path of the final artifact; its basename is matched against the link/archive shim's `-o` to decide what gets submitted as the derivation's output |
+| `targets` | yes | list of `{ name; path; }` — one entry per binary/archive this build produces. `name` labels the target (and becomes its own submitted output); `path`'s basename is matched against the link/archive shim's `-o` to decide which step produced it. Order matters: the first entry is "the" target for this call's own `.result`/`.package`. Most builds have exactly one entry; mosh's `mosh-server` + `mosh-client` is the multi-target example |
 | `buildCommand` | yes | shell run inside the sandbox once shims are on `PATH` — typically `make`/`cmake --build`/`ninja` |
 | `nativeBuildInputs` | no | build-time tools (compilers, generators, `pkg-config`) |
 | `buildInputs` | no | libraries the build links against |
@@ -304,7 +304,7 @@ let
     pname = "zstd-gen-html";
     version = "0";
     src = pkgs.zstd.src;
-    target = "gen_html";
+    targets = [ { name = "gen_html"; path = "gen_html"; } ];
     buildCommand = ''
       cd contrib/gen_html
       g++ -O2 -c gen_html.cpp -o gen_html.o

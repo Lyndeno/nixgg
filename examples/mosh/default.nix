@@ -47,7 +47,17 @@ mkNixggBuild {
   pname = "mosh";
   version = "unstable";
   inherit src rpcHelper batchGroups;
-  target = "mosh-server";
+  # Both default to `--enable-client`/`--enable-server` (yes) in
+  # configure.ac — no configure flag needed to get both binaries.
+  # mkNixggBuild's multi-target `targets` param (see
+  # nix/mkNixggBuild.nix's own docstring) submits both from this one
+  # buildCommand invocation instead of discarding mosh-client's link
+  # the way a single `target` string used to.
+  # A LIST, not an attrset — order matters: the FIRST entry is "the"
+  # target for .#mosh's own result/package (see mkNixggBuild.nix's
+  # own targets docstring for why an attrset's alphabetical iteration
+  # order silently picked mosh-client here during development).
+  targets = [ { name = "mosh-server"; path = "mosh-server"; } { name = "mosh-client"; path = "mosh-client"; } ];
   nativeBuildInputs = [
     autoconf
     automake

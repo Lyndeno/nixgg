@@ -54,7 +54,7 @@ mkNixggBuild {
   pname = "redis";
   version = "8.2.2";
   inherit src rpcHelper batchGroups;
-  target = "redis-server";
+  targets = [ { name = "redis-server"; path = "redis-server"; } ];
   # Same set nixpkgs uses, plus grep/sed/awk that redis's release
   # scripts shell out to.
   nativeBuildInputs = [ pkg-config which python3 gnugrep gnused gawk ];

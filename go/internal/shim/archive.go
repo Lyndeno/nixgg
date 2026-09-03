@@ -71,6 +71,7 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	}
 	e := expr.Archive(expr.ArchiveParams{
 		Helpers:    cfg.Helpers,
+		Name:       multiTargetName(archive),
 		OutName:    filepath.Base(archive),
 		Inputs:     arInputs,
 		ARFlags:    modifiers,
@@ -153,8 +154,13 @@ func realARFor(cfg *toolchain.Config) string {
 
 // archiveSandbox handles NIXGG_SANDBOX=1: emit a JSON drv describing
 // this archive step, hand it to `nix derivation add`, symlink the
-// output at the returned drv path. Never submits — archives are
-// intermediate; only the link shim submits.
+// output at the returned drv path. Usually doesn't submit — archives
+// are usually intermediate, consumed by a later link — but DOES
+// submit when NIXGG_SANDBOX_TARGET names this archive explicitly
+// (e.g. a static-lib-only build, or one of a multi-target build's
+// targets is itself an archive). See maybeSubmit's own docstring for
+// the naming override a multi-target match needs, mirrored here the
+// same way linkSandbox does it.
 func archiveSandbox(
 	cfg *toolchain.Config,
 	archive, modifiers string,
@@ -171,8 +177,12 @@ func archiveSandbox(
 	// gcc-wrapper's binutils dependency.
 	arRoot := filepath.Dir(filepath.Dir(cfg.RealCC)) // strip /bin
 
+	name := "ar-" + outName
+	if override := multiTargetName(archive); override != "" {
+		name = override
+	}
 	drv := expr.ArchiveJSON(expr.ArchiveJSONParams{
-		Name:        "ar-" + outName,
+		Name:        name,
 		OutName:     outName,
 		System:      cfg.System,
 		Bash:        cfg.BashRoot,

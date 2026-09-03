@@ -456,7 +456,7 @@
                   pname = "zstd-gen-html";
                   version = "0";
                   src = pkgs.zstd.src;
-                  target = "gen_html";
+                  targets = [ { name = "gen_html"; path = "gen_html"; } ];
                   buildCommand = ''
                     cd contrib/gen_html
                     g++ -O2 -c gen_html.cpp -o gen_html.o
@@ -933,6 +933,13 @@
           llvm-min-tblgen-batch = examples.llvm-batch.llvm-min-tblgen.package;
           llvm-tblgen-batch = examples.llvm-batch.llvm-tblgen.package;
           two-phase-codegen = examples.two-phase.codegen.package;
+          # mosh's second multi-target output (mosh's default .package
+          # is mosh-server, the first entry in examples/mosh/
+          # default.nix's own targets list) — see mkNixggBuild.nix's
+          # own `packages` attrset for the general mechanism any
+          # multi-target build's non-primary targets are reachable
+          # through.
+          mosh-client = examples.mosh.packages.mosh-client;
 
           toolchain-json = toolchainJson;
           env-shell = envShell;
