@@ -585,7 +585,7 @@ see "What we don't (yet) do", now resolved below).
   compiles + 1 archive) when that archive's own `ar` invocation sees
   them — see `go/internal/expr/batcharchive.go`'s package docstring
   for the derivation shape. Verified at real scale:
-  `redis-batch-probe` collapses ~45 vendored-dep TUs + 5 archives into
+  `redis-batch` collapses ~45 vendored-dep TUs + 5 archives into
   5 combined derivations (158 → 113 total drvs); `mosh-batch` collapses
   30 TUs + 6 archives into 8; ffmpeg's own per-library archives
   (`ffmpeg-batch`) confirm the same win at ~1200 TUs where it fits (see

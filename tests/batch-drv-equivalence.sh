@@ -14,7 +14,7 @@
 #   lua-batch    — small (~30 TUs), fast, ENTIRELY one batch group
 #                  (every TU feeding liblua.a is batched) — the fast,
 #                  legible happy-path check.
-#   redis-batch-probe — ~150 TUs, PARTIALLY batched (only deps/, not
+#   redis-batch  — ~150 TUs, PARTIALLY batched (only deps/, not
 #                  redis's own src/) — proves the negative/fallback
 #                  path: an archive whose inputs are NOT all
 #                  same-group-pending still builds correctly via
@@ -192,7 +192,7 @@ print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
     return 1
   fi
 
-  # Only batch- thunks — a partially-batched fixture (redis-batch-probe)
+  # Only batch- thunks — a partially-batched fixture (redis-batch)
   # also produces ordinary tu-/ar-/bin- thunks for its unbatched TUs;
   # those are drv-equivalence.sh's own concern, not this script's.
   local nt_drvs
@@ -313,9 +313,9 @@ if [[ -z "${ONLY:-}" || "$ONLY" == "lua-batch" ]]; then
   run_fixture "lua-batch" "lua-src" "" || fail=1
   functional_check "lua-batch" || fail=1
 fi
-if [[ -z "${ONLY:-}" || "$ONLY" == "redis-batch-probe" ]]; then
-  run_fixture "redis-batch-probe" "redis-src" "" || fail=1
-  functional_check "redis-batch-probe" || fail=1
+if [[ -z "${ONLY:-}" || "$ONLY" == "redis-batch" ]]; then
+  run_fixture "redis-batch" "redis-src" "" || fail=1
+  functional_check "redis-batch" || fail=1
 fi
 
 echo

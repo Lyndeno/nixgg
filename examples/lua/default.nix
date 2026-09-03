@@ -12,7 +12,7 @@
   # sets this so tests/batch-drv-equivalence.sh has a small (~30-TU),
   # fast, already-in-tree fixture that's ENTIRELY one archive (liblua.a)
   # feeding one link — the shape tryBatchArchive is built for, and
-  # small enough to be the fast/legible check redis-batch-probe's own
+  # small enough to be the fast/legible check redis-batch's own
   # ~150-TU build isn't.
   batchGroups ? [ ],
 }:
