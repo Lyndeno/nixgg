@@ -133,7 +133,7 @@ jobs:
       # sandbox modes must produce byte-identical batch-archive drvs,
       # and the resulting archive's own member list must be non-empty
       # and correctly ordered. Runs both of this script's own fixtures
-      # (lua-batch: small/fast happy path; redis-batch-probe: larger,
+      # (lua-batch: small/fast happy path; redis-batch: larger,
       # partial-match/negative-path coverage) — see the script's own
       # header comment for why both matter.
       - name: Run batch-drv-equivalence

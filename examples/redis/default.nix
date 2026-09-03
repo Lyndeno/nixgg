@@ -34,7 +34,7 @@
   # way mosh's own 30-TU measurement (README.md's "Optional: a
   # persistent helper" section) predicted it should.
   rpcHelper ? false,
-  # batchGroups passthrough — see flake.nix's redis-batch-probe entry,
+  # batchGroups passthrough — see flake.nix's redis-batch entry,
   # which sets this to nix/batchGroupPresets.nix's vendorDeps preset
   # to confirm real classification against redis's own deps/ tree —
   # exactly the vendored-and-rarely-edited case that motivated

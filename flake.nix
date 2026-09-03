@@ -551,7 +551,7 @@
             # archive. Small and fast: tests/batch-drv-equivalence.sh's
             # own dedicated native/sandbox parity check for the
             # batch-archive shape itself, distinct from
-            # redis-batch-probe's larger, partial-match/negative-path
+            # redis-batch's larger, partial-match/negative-path
             # coverage.
             lua-batch = {
               dir = ./examples/lua;
@@ -664,7 +664,7 @@
             # archives it, so it can never be a batch target
             # regardless of MALLOC. See examples/redis/default.nix's
             # own batchGroups docstring.
-            redis-batch-probe = {
+            redis-batch = {
               dir = ./examples/redis;
               args = {
                 inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
