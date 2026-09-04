@@ -8,7 +8,9 @@
 # construction (see go/internal/expr/batcharchive.go's own package
 # docstring) — this script is that shape's own, separate check,
 # mirroring drv-equivalence.sh's methodology exactly but filtering on
-# "batch-" instead.
+# "batch-" instead. Shared alt-store/patched-nix scaffolding,
+# native-src resolution, the native build invocation, and the
+# match/mismatch reporting live in tests/lib/drv-equiv-common.sh.
 #
 # Two fixtures:
 #   lua-batch    — small (~30 TUs), fast, ENTIRELY one batch group
@@ -35,37 +37,10 @@
 
 set -euo pipefail
 
-here="$(cd "$(dirname "$0")" && pwd)"
-nixgg_root="$(cd "$here/.." && pwd)"
+# shellcheck source=lib/drv-equiv-common.sh
+source "$(cd "$(dirname "$0")" && pwd)/lib/drv-equiv-common.sh"
 
-ALT_STORE="${ALT_STORE:-/tmp/nixgg-batch-equiv-store}"
-PATCHED_NIX="${PATCHED_NIX:-$nixgg_root/.patched-nix}"
-if [[ ! -x "$PATCHED_NIX/bin/nix" ]]; then
-  echo "==> building patched nix (one-time; substituted from cache)" >&2
-  nix build --no-eval-cache "$nixgg_root#patched-nix" \
-    -o "$PATCHED_NIX" >&2 || {
-      echo "failed to build $nixgg_root#patched-nix" >&2
-      exit 2
-    }
-fi
-
-if [[ "${KEEP_STORE:-}" != "1" ]]; then
-  chmod -R u+w "$ALT_STORE" 2>/dev/null || true
-  rm -rf "$ALT_STORE"
-fi
-mkdir -p "$ALT_STORE"
-
-export NIX_REMOTE=""
-export NIX_CONFIG="
-experimental-features = nix-command flakes ca-derivations dynamic-derivations configurable-impure-env
-extra-system-features = builder-rpc-v0
-store = local?root=$ALT_STORE
-"
-
-if [[ ! -e "$ALT_STORE/$(readlink -f "$PATCHED_NIX")" ]]; then
-  "$PATCHED_NIX/bin/nix" copy --from daemon --to "local?root=$ALT_STORE" \
-      --no-check-sigs "$(readlink -f "$PATCHED_NIX")" >/dev/null 2>&1 || true
-fi
+equiv_common_setup "/tmp/nixgg-batch-equiv-store"
 
 # run_fixture: same structure as drv-equivalence.sh's own
 # run_fixture, filtering on "batch-" instead of "tu-|ar-|bin-", plus
@@ -114,81 +89,23 @@ run_fixture() {
 
   local workdir="$(mktemp -d)"
   local src
-  if [[ "$src_input" == "example" ]]; then
-    src="$nixgg_root/example"
-  else
-    # Resolve just this one input's locked spec straight out of
-    # flake.lock and fetch IT alone — not `nix flake archive` (which
-    # resolves/copies EVERY input) and not `builtins.getFlake` either
-    # (still has to lock the WHOLE transitive input graph — nix-15793
-    # and its own sub-inputs, ffmpeg-src, llvm-src, gcc-src — before
-    # it can hand back even one field; confirmed directly: identical
-    # failure mode to flake archive in a cold/isolated store). Every
-    # input here is `flake = false` (a plain source tree, not a
-    # flake), so its own locked node has no further inputs to chase —
-    # fetchTree on it is genuinely standalone.
-    local locked
-    locked=$(python3 -c "
-import json
-d = json.load(open('$nixgg_root/flake.lock'))
-print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
-" 2>/dev/null)
-    if [[ -n "$locked" ]]; then
-      src=$("$PATCHED_NIX/bin/nix" eval --impure --raw \
-        --expr "(builtins.fetchTree (builtins.fromJSON $locked)).outPath" 2>/dev/null)
-      # fetchTree ran against store = local?root=$ALT_STORE (this
-      # script's own NIX_CONFIG), so the path it returns lives under
-      # $ALT_STORE, not directly at /nix/store — same convention
-      # every other store-path reference in this script already
-      # follows (see e.g. the batch_drv/archive_path lookups below).
-      # Confirmed directly in CI: the bare path can spuriously exist
-      # anyway on a machine with its own ambient /nix/store (which
-      # masked this for months of local-only runs), but under CI's
-      # genuinely fresh store it never does.
-      [[ -n "$src" ]] && src="$ALT_STORE$src"
-    fi
-  fi
-
+  src=$(equiv_resolve_native_src "$src_input") || true
   if [[ -z "$src" || ! -e "$src" ]]; then
     echo "could not resolve native src for $attr (input=$src_input)" >&2
     return 1
   fi
 
-  cp -a "$src"/. "$workdir/"
-  chmod -R u+w "$workdir"
-  rm -rf "$workdir/.nixgg" 2>/dev/null || true
-
-  if [[ -e "$workdir/${subdir}/Makefile" ]]; then
-    ( cd "$workdir/${subdir}" && make clean ) >/dev/null 2>&1 || true
-  fi
-
-  local build_cmd
-  build_cmd="$("$PATCHED_NIX/bin/nix" eval --raw \
-    "$nixgg_root#$attr-shell.passthru.buildCommand" 2>/dev/null)" || {
-      echo "could not read buildCommand for $attr" >&2
-      return 1
-    }
-
-  printf '==> native: nix develop .#%s-shell in %s\n' "$attr" "$workdir/${subdir}"
   local nt_log="/tmp/nixgg-batch-equiv-$attr-native.log"
-  (
-    cd "$workdir/${subdir}"
-    "$PATCHED_NIX/bin/nix" develop "$nixgg_root#$attr-shell" --command bash -c "
-      export NIXGG_STORE='local?root=$ALT_STORE'
-      export NIXGG_AUTOFORCE=0
-      set -euo pipefail
-      $build_cmd
-    "
-  ) > "$nt_log" 2>&1 || {
-    echo "native build failed; see $nt_log:" >&2
-    tail -20 "$nt_log" >&2
+  equiv_native_build "$attr" "$subdir" "$workdir" "$nt_log" || {
+    rm -rf "$workdir"
     return 1
   }
 
   local thunk_files
-  thunk_files=$(find "$workdir" -type f -path '*/.nixgg/thunks/*.nix' 2>/dev/null)
+  thunk_files=$(equiv_collect_thunks "$workdir")
   if [[ -z "$thunk_files" ]]; then
     echo "native build produced no thunks; see $nt_log" >&2
+    rm -rf "$workdir"
     return 1
   fi
 
@@ -198,31 +115,12 @@ print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
   local nt_drvs
   nt_drvs=$(while IFS= read -r t; do
     local base
-    base=$("$PATCHED_NIX/bin/nix" eval --no-eval-cache --impure --raw \
-      --file "$t" drvPath 2>/dev/null | xargs -n1 basename)
+    base=$(equiv_thunk_drvpath "$t")
     [[ "$base" =~ ^[a-z0-9]+-batch- ]] && echo "$base"
   done <<<"$thunk_files" | sort -u)
 
-  local only_sandbox only_native both
-  only_sandbox=$(comm -23 <(echo "$sb_drvs") <(echo "$nt_drvs"))
-  only_native=$(comm -13 <(echo "$sb_drvs") <(echo "$nt_drvs"))
-  both=$(comm -12 <(echo "$sb_drvs") <(echo "$nt_drvs"))
-
-  local n_both n_only_sb n_only_nt
-  n_both=$(printf '%s\n' "$both" | grep -c . || true)
-  n_only_sb=$(printf '%s\n' "$only_sandbox" | grep -c . || true)
-  n_only_nt=$(printf '%s\n' "$only_native" | grep -c . || true)
-  n_both=${n_both:-0}
-  n_only_sb=${n_only_sb:-0}
-  n_only_nt=${n_only_nt:-0}
-
-  printf '   %d batch-drvs match, %d only-sandbox, %d only-native\n' \
-    "$n_both" "$n_only_sb" "$n_only_nt"
-
-  if (( n_only_sb > 0 || n_only_nt > 0 )); then
-    printf '\033[1;31mMISMATCH\033[0m %s\n' "$label" >&2
-    (( n_only_sb > 0 )) && printf '  only in sandbox:\n%s\n' "$only_sandbox" >&2
-    (( n_only_nt > 0 )) && printf '  only in native:\n%s\n' "$only_native" >&2
+  local n_both
+  if ! n_both=$(equiv_report_sets "$label" "batch-drvs" "$sb_drvs" "$nt_drvs"); then
     rm -rf "$workdir"
     return 1
   fi

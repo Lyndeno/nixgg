@@ -88,53 +88,24 @@ let
     stdenv:
     (import "${nixpkgsPath}/pkgs/stdenv/generic/make-derivation.nix" lib config stdenv).mkDerivation;
 
-  # NIXGG_* vars match mkNixggBuild.nix's toolchainEnv.
-  #
-  # NIXGG_SANDBOX_TARGET is set to an unmatchable path rather than left
-  # unset: link.go's maybeSubmit defaults to submitting whatever it
-  # links as the outer drv's "out" when TARGET is empty — correct for
-  # mkNixggBuild's single-target builds, wrong here, where `nixgg
-  # assemble` (postBuild) owns the one "out" submission for the whole
-  # tree.
-  #
-  # knownStorePathsJSON is a parameter (not computed once here) because
-  # dynDrvStdenv wraps an arbitrary existing package — the real store
-  # paths the shim needs to recognize vary per package and are only
-  # known from probeArgs.buildInputs, read per-call in withPhase1Attrs.
-  ggShimsOnPath = knownStorePathsJSON: ''
-    export PATH="${nixgg}/shims:${patchedNix}/bin:$PATH"
-    export NIXGG_ROOT="${nixgg}"
-    export NIXGG_COMPILER_ROOT="${gcc}"
-    export NIXGG_BASH_ROOT="${bash}"
-    export NIXGG_COREUTILS_ROOT="${coreutils}"
-    export NIXGG_GNUMAKE_ROOT="${gnumake}"
-    export NIXGG_REAL_CC="${gcc}/bin/g++"
-    export NIXGG_NIX="${patchedNix}/bin/nix"
-    export NIXGG_NIX_HELPERS="${nixgg}"
-    export NIXGG_SANDBOX=1
-    export NIXGG_STORE="auto"
-    export NIXGG_SYSTEM="${system}"
-    export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
-    export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
-    # Raw worker-protocol client for the sandbox's own daemon socket
-    # (internal/rpc) instead of per-call fork+exec — see
-    # mkNixggBuild.nix's own comment on this same var for the
-    # verification this default rests on. NIXGG_RPC=0 is the escape
-    # hatch back to the CLI fallback.
-    export NIXGG_RPC=1
-    export NIX_CONFIG="extra-experimental-features = nix-command ca-derivations dynamic-derivations"
-  '';
-
-  # Records $PWD's offset relative to $NIX_BUILD_TOP (phase 2 needs to
-  # cd back there — cmake's `mkdir build && cd build` means $PWD here
-  # isn't $NIX_BUILD_TOP), then walks $NIX_BUILD_TOP for every drvref
-  # stub the shims left, builds one assembly drv that restores the tree
-  # and resolves each stub, and submits it as this derivation's "out".
-  # See go/internal/cli/assemble.go / go/internal/assemble/.
-  submitBuildTreeScript = drvName: ''
-    realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
-    ${nixgg}/bin/nixgg assemble "$NIX_BUILD_TOP" "${drvName}"
-  '';
+  # Bindings that are byte-for-byte identical between this file and
+  # dynDrvConfigureCacheStdenv.nix (confirmed via diff; see git
+  # history — 1d605d5, 9bec045 — for two real bugs that had to be
+  # fixed by hand in both copies) — see nix/dynDrvShared.nix's own
+  # docstring for what's in it and why.
+  shared = import ./dynDrvShared.nix {
+    inherit
+      lib
+      patchedNix
+      nixgg
+      bash
+      coreutils
+      gcc
+      gnumake
+      system
+      ;
+  };
+  inherit (shared) ggShimsOnPath submitBuildTreeScript outputPlaceholder;
 in
 
 stdenv0.override (
@@ -203,99 +174,14 @@ stdenv0.override (
           # "bin"/"dev"/"man" empty.
           realOutputs = probeArgs.outputs or [ "out" ];
           extraOutputs = builtins.filter (o: o != "out") realOutputs;
-          outputPlaceholder = o: if o == "out" then "/nonexistent" else "/nonexistent-${o}";
 
-          # Phase 2's restore/split step, generated once so it stays in
-          # sync with outputPlaceholder above: for every real output,
-          # make the real output dir and copy its placeholder subtree
-          # (installed by phase 2's own installPhase, DESTDIR-relative)
-          # into it. `v`/`ph` are built via string concatenation, not
-          # Nix's `${}` antiquotation, so the emitted script contains a
-          # literal shell variable reference (e.g. "$bin"), not a
-          # Nix-side interpolation of it.
-          #
-          # `[ -d ... ] &&` guards each cp: multiple-outputs.sh's
-          # automatic per-output DESTDIR routing (_overrideFirst
-          # outputBin "bin" "out", etc.) only takes effect when the
-          # package's OWN build system actually threads $bin/$dev/...
-          # through to its install step (e.g. via --bindir=$bin/bin on
-          # an autoconf-style configure). Some packages don't — openssl
-          # installs everything flat under out's placeholder and does
-          # its own real `mv $out/bin $bin/bin` in postInstall instead
-          # — so `$DESTDIR<placeholder>` for that output is never
-          # created at all. Failing on a missing directory there would
-          # break every such package outright; skipping it just leaves
-          # that real output empty for THIS script and lets the
-          # package's own postInstall (which runs right after, per
-          # nixpkgs hook order) populate it from the real $out however
-          # it normally does. Confirmed necessary directly: openssl's
-          # own bin split hit exactly this.
-          #
-          # `mkdir -p "${v}"` lives INSIDE that same guard, not before
-          # it: a package whose own postInstall creates that output dir
-          # itself may do so with a bare `mkdir` (no `-p`), expecting a
-          # not-yet-existing directory — openssl's own `mkdir $dev`
-          # (right before `mv $out/include $dev/`) is exactly this.
-          # Pre-creating "$dev" unconditionally here made that `mkdir`
-          # fail with "File exists". Confirmed necessary directly.
-          #
-          # Two possible source locations, not one: a package's
-          # makeFlags/installFlags can point an output at its own real,
-          # absolute final path instead of the placeholder scheme here
-          # (openssl's `MANDIR=$(man)/share/man`, where $man is already
-          # the real "*-openssl-3.6.3-man" store path — set that way
-          # because phase 2, unlike phase 1, has real per-output paths
-          # available). Once DESTDIR is threaded onto make's own
-          # command line (see ggRestorePhase), THAT absolute path also
-          # ends up DESTDIR-prefixed — "$DESTDIR/nix/store/...-man",
-          # never under the placeholder tree at all. Confirmed directly
-          # against openssl's man output.
-          restoreOutputsScript = lib.concatMapStrings (
-            o:
-            let
-              v = "$" + o;
-              ph = outputPlaceholder o;
-            in
-            ''
-              if [ -d "$DESTDIR${ph}" ]; then mkdir -p "${v}"; cp -a "$DESTDIR${ph}/." "${v}/"; fi
-              if [ -d "$DESTDIR${v}" ]; then mkdir -p "${v}"; cp -a "$DESTDIR${v}/." "${v}/"; fi
-            ''
-          ) realOutputs;
-
-          # cc-wrapper's ld-wrapper bakes a self-rpath into every linked
-          # binary/shared-lib at LINK time (phase 1's buildPhase), using
-          # whatever output path was live then — one of the placeholders
-          # above, e.g. "/nonexistent/lib" for zstd's libzstd.so (its
-          # outputLib defaults to "out", same placeholder as $out
-          # itself). Confirmed directly: without this rewrite, the
-          # dangling placeholder rpath survives into phase 2, and
-          # fixupPhase's own patchelf-based shrinkRPath step (correctly)
-          # drops it since nothing exists at that literal path — leaving
-          # zstd's `bin/zstd` unable to find libzstd.so.1 at runtime,
-          # `nix run` failing with "cannot open shared object file".
-          # Longest-placeholder-first order (extraOutputs before "out")
-          # matters: "/nonexistent" is a literal prefix of
-          # "/nonexistent-bin", so substituting it first would also
-          # mangle the longer placeholders.
-          elfRpathFixupScript =
-            let
-              sedOrder = extraOutputs ++ [ "out" ];
-              sedExprs = lib.concatMapStrings (
-                o: " -e \"s|" + outputPlaceholder o + "|$" + o + "|g\""
-              ) sedOrder;
-              outputDirsList = lib.concatMapStrings (o: "\"$" + o + "\" ") realOutputs;
-            in
-            ''
-              while IFS= read -r -d "" gg_f; do
-                gg_rp="$(patchelf --print-rpath "$gg_f" 2>/dev/null)" || continue
-                [ -z "$gg_rp" ] && continue
-                gg_newrp="$(printf '%s' "$gg_rp" | sed${sedExprs})"
-                if [ "$gg_newrp" != "$gg_rp" ]; then
-                  chmod u+w "$gg_f"
-                  patchelf --set-rpath "$gg_newrp" "$gg_f"
-                fi
-              done < <(find ${outputDirsList} -type f -print0 2>/dev/null)
-            '';
+          # restoreOutputsScript/elfRpathFixupScript: see
+          # nix/dynDrvShared.nix's own docstring on both for the
+          # openssl-derived rationale (DESTDIR guard ordering, two
+          # possible source locations per output, rpath rewrite
+          # ordering).
+          restoreOutputsScript = shared.restoreOutputsScript outputPlaceholder realOutputs;
+          elfRpathFixupScript = shared.elfRpathFixupScript outputPlaceholder realOutputs extraOutputs;
 
           withPhase1Attrs =
             finalAttrs:

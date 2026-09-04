@@ -82,43 +82,29 @@ let
 
   mkConfigureSrcFilter = import ./configureSrcFilter.nix { inherit lib stdenvNoCC; };
 
-  # Same NIXGG_* env as dynDrvStdenv.nix's ggShimsOnPath — group A
-  # needs this too (shims must be on PATH before configure bakes an
-  # absolute compiler path into the generated Makefile), but group A
-  # never unsets NIXGG_BYPASS, so it never needs
-  # NIXGG_SANDBOX_TARGET/NIXGG_KNOWN_STORE_PATHS to be exactly right
-  # — bypassed() short-circuits before any of that matters. Kept
-  # anyway for parity/debuggability.
-  ggShimsOnPath = knownStorePathsJSON: ''
-    export PATH="${nixgg}/shims:${patchedNix}/bin:$PATH"
-    export NIXGG_ROOT="${nixgg}"
-    export NIXGG_COMPILER_ROOT="${gcc}"
-    export NIXGG_BASH_ROOT="${bash}"
-    export NIXGG_COREUTILS_ROOT="${coreutils}"
-    export NIXGG_GNUMAKE_ROOT="${gnumake}"
-    export NIXGG_REAL_CC="${gcc}/bin/g++"
-    export NIXGG_NIX="${patchedNix}/bin/nix"
-    export NIXGG_NIX_HELPERS="${nixgg}"
-    export NIXGG_SANDBOX=1
-    export NIXGG_STORE="auto"
-    export NIXGG_SYSTEM="${system}"
-    export NIXGG_SANDBOX_TARGET="/nonexistent/nixgg-phase1-no-per-artifact-submit"
-    export NIXGG_KNOWN_STORE_PATHS=${lib.escapeShellArg knownStorePathsJSON}
-    # Raw worker-protocol client for the sandbox's own daemon socket
-    # (internal/rpc) instead of per-call fork+exec — see
-    # mkNixggBuild.nix's own comment on this same var for the
-    # verification this default rests on. NIXGG_RPC=0 is the escape
-    # hatch back to the CLI fallback. Harmless in group A too, where
-    # every shim call is bypassed anyway (NIXGG_BYPASS=1) and never
-    # reads this var at all.
-    export NIXGG_RPC=1
-    export NIX_CONFIG="extra-experimental-features = nix-command ca-derivations dynamic-derivations"
-  '';
-
-  submitBuildTreeScript = drvName: ''
-    realpath --relative-to="$NIX_BUILD_TOP" "$PWD" > "$NIX_BUILD_TOP/.gg-cwd"
-    ${nixgg}/bin/nixgg assemble "$NIX_BUILD_TOP" "${drvName}"
-  '';
+  # Bindings that are byte-for-byte identical between this file and
+  # dynDrvStdenv.nix (confirmed via diff; see git history — 1d605d5,
+  # 9bec045 — for two real bugs that had to be fixed by hand in both
+  # copies) — see nix/dynDrvShared.nix's own docstring for what's in
+  # it and why. ggShimsOnPath here is used by group A too (shims must
+  # be on PATH before configure bakes an absolute compiler path into
+  # the generated Makefile), but group A never unsets NIXGG_BYPASS, so
+  # it never needs NIXGG_SANDBOX_TARGET/NIXGG_KNOWN_STORE_PATHS to be
+  # exactly right — bypassed() short-circuits before any of that
+  # matters. Kept anyway for parity/debuggability.
+  shared = import ./dynDrvShared.nix {
+    inherit
+      lib
+      patchedNix
+      nixgg
+      bash
+      coreutils
+      gcc
+      gnumake
+      system
+      ;
+  };
+  inherit (shared) ggShimsOnPath submitBuildTreeScript outputPlaceholder;
 
   # Same mechanism as mkNixggBuild.nix's own helperPreBuild/
   # helperPostBuild — see there for the socket-polling/pool-size
@@ -172,12 +158,10 @@ stdenv0.override (
 
         realOutputs = probeArgs.outputs or [ "out" ];
         extraOutputs = builtins.filter (o: o != "out") realOutputs;
-        # Same placeholder scheme as dynDrvStdenv.nix's own
-        # outputPlaceholder — group B's environment already expects
-        # these exact names (see withGroupBAttrs below), so group A's
-        # real output content needs rewriting to match them, not the
-        # other way around.
-        outputPlaceholder = o: if o == "out" then "/nonexistent" else "/nonexistent-${o}";
+        # outputPlaceholder comes from `shared` (outer let) — same
+        # placeholder scheme as dynDrvStdenv.nix. group A's real
+        # output content needs rewriting to match those exact names
+        # (see withGroupBAttrs below), not the other way around.
 
         existenceStubs = if configureSrcFilter == null then [ ] else configureSrcFilter.existenceStubs or [ ];
 
@@ -383,52 +367,13 @@ stdenv0.override (
 
         builtTree = builtins.outputOf groupB.outPath "out";
 
-        # See dynDrvStdenv.nix's own restoreOutputsScript for why the
-        # `[ -d ... ]` guard is needed (openssl-style packages that
-        # split outputs themselves in postInstall against the real
-        # $out, never populating $DESTDIR<placeholder> for that
-        # output at all), why `mkdir -p "${v}"` must live INSIDE that
-        # guard rather than run unconditionally first (a package's own
-        # postInstall may `mkdir` — no `-p` — an output dir itself,
-        # expecting it not to exist yet; openssl's own `mkdir $dev` is
-        # exactly this), and why there are TWO possible source
-        # locations per output, not one (a package's own
-        # makeFlags/installFlags can point straight at the real,
-        # absolute final path instead of the placeholder scheme —
-        # openssl's `MANDIR=$(man)/share/man` — which also ends up
-        # DESTDIR-prefixed once DESTDIR is threaded onto make's
-        # command line).
-        restoreOutputsScript = lib.concatMapStrings (
-          o:
-          let
-            v = "$" + o;
-            ph = outputPlaceholder o;
-          in
-          ''
-            if [ -d "$DESTDIR${ph}" ]; then mkdir -p "${v}"; cp -a "$DESTDIR${ph}/." "${v}/"; fi
-            if [ -d "$DESTDIR${v}" ]; then mkdir -p "${v}"; cp -a "$DESTDIR${v}/." "${v}/"; fi
-          ''
-        ) realOutputs;
-
-        elfRpathFixupScript =
-          let
-            sedOrder = extraOutputs ++ [ "out" ];
-            sedExprs = lib.concatMapStrings (
-              o: " -e \"s|" + outputPlaceholder o + "|$" + o + "|g\""
-            ) sedOrder;
-            outputDirsList = lib.concatMapStrings (o: "\"$" + o + "\" ") realOutputs;
-          in
-          ''
-            while IFS= read -r -d "" gg_f; do
-              gg_rp="$(patchelf --print-rpath "$gg_f" 2>/dev/null)" || continue
-              [ -z "$gg_rp" ] && continue
-              gg_newrp="$(printf '%s' "$gg_rp" | sed${sedExprs})"
-              if [ "$gg_newrp" != "$gg_rp" ]; then
-                chmod u+w "$gg_f"
-                patchelf --set-rpath "$gg_newrp" "$gg_f"
-              fi
-            done < <(find ${outputDirsList} -type f -print0 2>/dev/null)
-          '';
+        # restoreOutputsScript/elfRpathFixupScript come from `shared`
+        # (outer let) — see nix/dynDrvShared.nix's own docstring for
+        # the openssl-derived rationale (DESTDIR guard ordering, two
+        # possible source locations per output, rpath rewrite
+        # ordering).
+        restoreOutputsScript = shared.restoreOutputsScript outputPlaceholder realOutputs;
+        elfRpathFixupScript = shared.elfRpathFixupScript outputPlaceholder realOutputs extraOutputs;
       in
       mkDerivationSuper (
         finalAttrs:

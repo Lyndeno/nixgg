@@ -19,6 +19,20 @@
 {
   mkNixggBuild,
   lib,
+  # Defaults reproduce today's `.#hello`. Override both to get the
+  # hello-helper fixture (see flake.nix's hello-helper exampleDefs
+  # entry) without a second near-duplicate file — the two stay
+  # independently buildable because each is still its own mkNixggBuild
+  # call with its own pname/outer derivation name, just sharing this
+  # one file's exampleSrc filter and buildCommand. That independence
+  # is the actual requirement: this repo's tests need a way to build
+  # .#hello WITHOUT the helper (the default, already-verified path)
+  # and .#hello-helper WITH it (internal/helper's persistent daemon-
+  # side relay — see mkNixggBuild.nix's own `rpcHelper` docstring),
+  # side by side, not a single toggle that changes what .#hello itself
+  # means.
+  pname ? "hello",
+  rpcHelper ? false,
 }:
 
 let
@@ -35,7 +49,7 @@ let
 in
 
 mkNixggBuild {
-  pname = "hello";
+  inherit pname rpcHelper;
   version = "0";
   src = exampleSrc;
   targets = [ { name = "hello"; path = "hello"; } ];

@@ -1,7 +1,6 @@
 package shim
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -216,5 +215,3 @@ func archiveSandbox(
 	maybeSubmit(cfg, drvPath, archive, false)
 	return nil
 }
-
-var _ = fmt.Sprintf // keep import; used only when sandbox path is compiled

@@ -546,6 +546,3 @@ func matchesTarget(target, output string) bool {
 	}
 	return false
 }
-
-var _ = fmt.Sprintf // silence unused-import warning if fmt goes away later
-var _ = os.Getpid

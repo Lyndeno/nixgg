@@ -150,8 +150,7 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		tuKey = rel
 	}
 	tuID := stage.TUID(tuKey)
-	stageRes, err := stage.Sources(l, tuID, entries)
-	if err != nil {
+	if _, err := stage.Sources(l, tuID, entries); err != nil {
 		return err
 	}
 
@@ -177,7 +176,6 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	// Absolute so the thunk file survives `cp` to a peer directory —
 	// see expr.Input.Ref docstring.
 	srcTreeLiteral := filepath.Join(l.Srcs, tuID)
-	_ = stageRes // reuse info is informational only under the new design
 
 	e := expr.Compile(expr.CompileParams{
 		Helpers:    cfg.Helpers,

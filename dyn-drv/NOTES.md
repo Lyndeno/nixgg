@@ -146,4 +146,6 @@ final drv, exits. The outer wrapper — mkNixggBuild — is a small
 Nix function that sets `outputHashMode = "text"`, `.drv` suffix,
 `requiredSystemFeatures`, and threads toolchain paths in.
 
-See `TASKS.md` for the integration plan.
+This plan is now implemented — see `go/internal/shim` (the JSON-drv
+emitters) and `nix/mkNixggBuild.nix` (the outer wrapper) for the real
+thing, and ARCHITECTURE.md for the current design writeup.

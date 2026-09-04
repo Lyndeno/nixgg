@@ -48,18 +48,23 @@ a JSON drv while native mode passes the same text through a thunk for
 eval time. `nix build .#lua` gets an instant cache hit from an earlier
 native build in an extracted lua source tree, and vice versa.
 
-Two tests, covering different failure modes:
+Several tests, covering different failure modes:
 
 - [tests/drv-equivalence.sh](tests/drv-equivalence.sh) — the invariant.
   149 drvs across five fixtures: `hello` (3), `lua` (37), `fmt` (3),
   `mosh` (38), `gcc` (68), every one matching byte-for-byte between the
   two modes. ~25 min; `ONLY=hello` is a 35-second smoke of the same
   machinery.
+- [tests/batch-drv-equivalence.sh](tests/batch-drv-equivalence.sh) —
+  the same invariant for the opt-in TU-batching feature's own
+  combined compile+archive derivation shape (`lua-batch`,
+  `redis-batch`), which the plain drv-equivalence check above can't
+  see (it's a different derivation Kind entirely).
 - [tests/smoke.sh](tests/smoke.sh) — every example builds, its artifact
   is at the FHS path it should be, and it runs. ~2 min;
   `EXAMPLES=all` adds redis, ffmpeg and llvm.
 
-The second exists because the first structurally cannot catch a whole
+The smoke test exists because the drv-hash check structurally cannot catch a whole
 class of bug: it compares drv *hashes* and never realises an output, so
 it stayed green at 149/149 while a change to output placement left
 native mode unable to collect any artifact at all.
@@ -72,6 +77,12 @@ edit one `.c` file in a 34-TU fixture, assert exactly its own TU
 recompiles and every other one stays a cache hit — the actual property
 ["Measured incremental-rebuild cost"](#measured-incremental-rebuild-cost)
 below claims openssl gets in practice.
+
+[tests/configure-cache-cutoff.sh](tests/configure-cache-cutoff.sh) and
+[tests/dyndrv-configure-cache-cutoff.sh](tests/dyndrv-configure-cache-cutoff.sh)
+close a fourth gap — configure-time early cutoff (an excluded-file edit
+should be a cache hit; an included-file edit should invalidate) — in
+native mode and dyn-drv mode respectively.
 
 ### Invoking sandbox mode explicitly
 
