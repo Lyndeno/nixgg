@@ -58,7 +58,8 @@ store = local?root=$ALT_STORE
 #
 # hello-helper is the same fixture as hello, but with rpcHelper = true
 # — exercises internal/helper's persistent daemon-side relay (see
-# dyn-drv/hello-helper-mkbuild.nix) end to end: the helper process
+# dyn-drv/hello-mkbuild.nix's own rpcHelper/pname passthrough) end to
+# end: the helper process
 # starts in preBuild, serves every shim invocation's
 # DerivationAdd/StoreAddScan/SubmitOutput call over a pooled
 # connection, and is killed in postBuild. Same expected drv hashes as

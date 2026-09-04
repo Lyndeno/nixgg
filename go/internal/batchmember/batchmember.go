@@ -40,7 +40,6 @@ import (
 // MemberRecord snapshots one deferred compile.
 type MemberRecord struct {
 	Group   string
-	TUID    string
 	Tool    string // "cc", "gcc", "c++", "g++"
 	Source  string // relative path inside the src tree, e.g. "sds.c"
 	OutName string // "sds.o"

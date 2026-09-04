@@ -20,14 +20,14 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	l := testLayout(t)
 
 	native := MemberRecord{
-		Group: "vendor", TUID: "deps/hiredis/sds.o", Tool: "cc",
+		Group: "vendor", Tool: "cc",
 		Source: "sds.c", OutName: "sds.o",
 		Flags: []string{"-O2", "-Wall"}, StoreDeps: []string{"/nix/store/aaa-foo"},
 		WrapperEnv:     map[string]string{"NIX_CFLAGS_COMPILE": "-isystem /nix/store/aaa-foo/include"},
 		SrcTreeLiteral: "../srcs/deps-hiredis-sds-o",
 	}
 	sandbox := MemberRecord{
-		Group: "vendor", TUID: "deps/lua/src/lapi.o", Tool: "cc",
+		Group: "vendor", Tool: "cc",
 		Source: "lapi.c", OutName: "lapi.o",
 		Flags: []string{"-DLUA_ANSI"},
 		SrcStore: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-deps-lua-src-lapi-o",

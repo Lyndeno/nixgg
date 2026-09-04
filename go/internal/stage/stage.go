@@ -33,40 +33,34 @@ type Entry struct {
 	Abs, Rel string
 }
 
-// Result reports where the staging dir lives and whether we reused it.
-// Callers that also want to skip re-writing a thunk can compare Reused.
-type Result struct {
-	Dir    string // absolute path to .nixgg/srcs/<tu-id>/
-	Reused bool
-}
-
 // Sources materialises `entries` into l.Srcs/tuID/. Idempotent, safe to
 // call concurrently on different tuIDs, MUST NOT be called concurrently
-// on the same tuID (we don't lock).
-func Sources(l paths.Layout, tuID string, entries []Entry) (Result, error) {
+// on the same tuID (we don't lock). Returns the absolute path to
+// .nixgg/srcs/<tu-id>/.
+func Sources(l paths.Layout, tuID string, entries []Entry) (string, error) {
 	dir := filepath.Join(l.Srcs, tuID)
 	if err := os.MkdirAll(l.Srcs, 0o755); err != nil {
-		return Result{}, err
+		return "", err
 	}
 
 	if reuseOK(dir, entries) {
-		return Result{Dir: dir, Reused: true}, nil
+		return dir, nil
 	}
 
 	// Rebuild from scratch. Cheaper than trying to reconcile — hardlinks
 	// are essentially free.
 	if err := os.RemoveAll(dir); err != nil {
-		return Result{}, err
+		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Result{}, err
+		return "", err
 	}
 	for _, e := range entries {
 		if err := hardlinkOrCopy(e.Abs, filepath.Join(dir, e.Rel)); err != nil {
-			return Result{}, err
+			return "", err
 		}
 	}
-	return Result{Dir: dir, Reused: false}, nil
+	return dir, nil
 }
 
 // FileEntry pairs a relative staging path with the exact bytes that

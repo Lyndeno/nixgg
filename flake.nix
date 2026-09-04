@@ -256,7 +256,6 @@
             nixgg       = nixggBin;
             nixHelpers  = nixHelpers;
             patchedNix  = patchedNix;
-            inherit system;
           };
 
           # dynDrvStdenv wraps an EXISTING stdenv (nixpkgsFun's own, or
@@ -525,6 +524,23 @@
           #
           # `nix build .#lua` builds the sandbox version; native
           # equivalence is pinned by tests/drv-equivalence.sh.
+
+          # Shared nativeBuildInputs/src for mosh's/redis's 3 example
+          # variants (plain / -helper / -batch) — each variant only
+          # adds one extra key (rpcHelper or batchGroups), so keep the
+          # dependency list itself as a single source of truth instead
+          # of repeating it three times.
+          moshArgs = {
+            inherit (pkgs)
+              autoconf automake libtool pkg-config perl protobuf which
+              gnum4 gnugrep gnused gawk file
+              ncurses openssl zlib abseil-cpp;
+            src = mosh-src;
+          };
+          redisArgs = {
+            inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
+            src = redis-src;
+          };
           exampleDefs = {
             # hello lives in dyn-drv/ rather than examples/: it is the
             # in-tree smoke fixture, built from nixgg/example/.
@@ -534,12 +550,12 @@
             };
             # Same fixture, rpcHelper = true — exercises
             # internal/helper's persistent daemon-side relay. See
-            # dyn-drv/hello-helper-mkbuild.nix's own comment for why
-            # this is a separate attribute rather than a flag on
-            # .#hello itself.
+            # dyn-drv/hello-mkbuild.nix's own pname/rpcHelper
+            # docstring for why this is a separate attribute rather
+            # than a flag on .#hello itself.
             hello-helper = {
-              dir = ./dyn-drv/hello-helper-mkbuild.nix;
-              args = { inherit (pkgs) lib; };
+              dir = ./dyn-drv/hello-mkbuild.nix;
+              args = { inherit (pkgs) lib; pname = "hello-helper"; rpcHelper = true; };
             };
             lua = {
               dir = ./examples/lua;
@@ -580,13 +596,7 @@
             };
             mosh = {
               dir = ./examples/mosh;
-              args = {
-                inherit (pkgs)
-                  autoconf automake libtool pkg-config perl protobuf which
-                  gnum4 gnugrep gnused gawk file
-                  ncurses openssl zlib abseil-cpp;
-                src = mosh-src;
-              };
+              args = moshArgs;
             };
             # Same fixture, rpcHelper = true — a real multi-TU/
             # multi-archive build (30 TUs + 6 archives, genuine `make
@@ -597,14 +607,7 @@
             # measures.
             mosh-helper = {
               dir = ./examples/mosh;
-              args = {
-                inherit (pkgs)
-                  autoconf automake libtool pkg-config perl protobuf which
-                  gnum4 gnugrep gnused gawk file
-                  ncurses openssl zlib abseil-cpp;
-                src = mosh-src;
-                rpcHelper = true;
-              };
+              args = moshArgs // { rpcHelper = true; };
             };
             # Same fixture, batchGroups covering every one of mosh's 6
             # lib*.a archives (crypto/network/terminal/util/
@@ -615,21 +618,13 @@
             # for all 6.
             mosh-batch = {
               dir = ./examples/mosh;
-              args = {
-                inherit (pkgs)
-                  autoconf automake libtool pkg-config perl protobuf which
-                  gnum4 gnugrep gnused gawk file
-                  ncurses openssl zlib abseil-cpp;
-                src = mosh-src;
+              args = moshArgs // {
                 batchGroups = [ { name = "mosh"; patterns = [ "src/*/*.cc" ]; } ];
               };
             };
             redis = {
               dir = ./examples/redis;
-              args = {
-                inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
-                src = redis-src;
-              };
+              args = redisArgs;
             };
             # Same fixture, rpcHelper = true — 175 TUs (deps + src),
             # ~6x mosh's own rpcHelper-benchmark fixture, to check
@@ -638,11 +633,7 @@
             # examples/redis/default.nix's own comment.
             redis-helper = {
               dir = ./examples/redis;
-              args = {
-                inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
-                src = redis-src;
-                rpcHelper = true;
-              };
+              args = redisArgs // { rpcHelper = true; };
             };
             # Same fixture, batchGroups = vendorDeps preset — a real
             # multi-directory build confirming internal/batch's
@@ -666,9 +657,7 @@
             # own batchGroups docstring.
             redis-batch = {
               dir = ./examples/redis;
-              args = {
-                inherit (pkgs) which pkg-config python3 lua gnugrep gnused gawk;
-                src = redis-src;
+              args = redisArgs // {
                 batchGroups = [
                   { name = "vendor"; patterns = batchGroupPresets.vendorDeps; }
                 ];
@@ -809,7 +798,6 @@
             two-phase = {
               dir = ./examples/two-phase;
               args = {
-                inherit (pkgs) lib;
                 codegenSrc = ./examples/two-phase/codegen;
                 appSrc = ./examples/two-phase/app;
               };

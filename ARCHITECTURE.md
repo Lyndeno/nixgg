@@ -145,6 +145,13 @@ nixgg/
 ├── example/                    smoke-test Makefile (main.cc + util.cc)
 ├── tests/
 │   ├── drv-equivalence.sh      native ↔ sandbox drv-hash regression test
+│   ├── batch-drv-equivalence.sh  same, for the opt-in TU-batching Kind
+│   ├── configure-cache-cutoff.sh / dyndrv-configure-cache-cutoff.sh
+│   │                           configure-time early-cutoff correctness
+│   │                           (native mode / dyn-drv mode)
+│   ├── perf-regression.sh     incremental-rebuild TU-count regression test
+│   ├── lib/                   shared helpers for the two drv-equivalence
+│   │                           scripts above
 │   └── smoke.sh                every example builds, lands at its FHS
 │                               path, and runs (what the hash test can't see)
 └── go/internal/
@@ -479,8 +486,8 @@ see "What we don't (yet) do", now resolved below).
   `mkreleasehdr.sh`).
 - **Mode-equivalent**: `tests/drv-equivalence.sh` pins that every
   inner drv matches byte-for-byte between native and sandbox mode
-  across all four fixtures — 81 drvs total (hello 3 · lua 37 · fmt 3
-  · mosh 38). Both modes share the same `Derivation` struct and
+  across all five fixtures — 149 drvs total (hello 3 · lua 37 · fmt 3
+  · mosh 38 · gcc 68). Both modes share the same `Derivation` struct and
   `preBuild` scrubbing, so drift is caught immediately.
 
 ## What we don't (yet) do

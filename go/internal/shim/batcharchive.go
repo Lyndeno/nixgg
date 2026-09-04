@@ -136,8 +136,7 @@ func submitCombinedArchive(cfg *toolchain.Config, l paths.Layout, archive, modif
 // each compile gets its own store output and a name collision is
 // impossible by construction. Without this, a later member's object
 // silently overwrites an earlier one's before `ar` ever runs: no
-// overwrites an earlier one's before `ar` ever runs: no build error,
-// just an archive quietly missing one implementation.
+// build error, just an archive quietly missing one implementation.
 // Confirmed directly against a real ffmpeg build — batching
 // libavutil this way dropped libavutil/x86/cpu.c's object, and the
 // final link failed with "undefined reference to `av_get_cpu_flags'"
@@ -170,7 +169,6 @@ func disambiguateOutNames(members []batchmember.MemberRecord) []batchmember.Memb
 	}
 	return out
 }
-
 
 // unionStoreDeps returns the deduplicated union of every member's own
 // StoreDeps plus extra (the archive's own).

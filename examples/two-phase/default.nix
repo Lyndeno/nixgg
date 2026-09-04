@@ -17,7 +17,6 @@
 # gymnastics needed.
 {
   mkNixggBuild,
-  lib,
   codegenSrc,
   appSrc,
 }:

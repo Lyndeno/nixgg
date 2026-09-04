@@ -32,7 +32,6 @@
   nixHelpers,   # nixgg-nix helper package (unused in sandbox mode,
                 # kept for parity with native)
   patchedNix,   # nix with builder-rpc-v0 + submit-output
-  system,       # target platform (e.g. "x86_64-linux")
 }:
 
 {
@@ -90,10 +89,16 @@
   # StoreAddScan and DerivationAdd each dial independently). See
   # go/internal/helper for the implementation.
   rpcHelper ? false,
-  # Opt-in, PROTOTYPE-scope batch-group declarations — see
+  # Opt-in, best-effort batch-group declarations — see
   # go/internal/batch's own package docstring for the mechanism and
-  # scope (classification/logging only for now; every TU still
-  # submits its own derivation regardless of which group it matches).
+  # scope: go/internal/shim/batcharchive.go's tryBatchArchive combines
+  # a same-group archive's pending compiles into ONE derivation (N
+  # compiles + 1 archive) via nix/batchArchiver.nix when it can, and
+  # falls back to nixgg's normal one-derivation-per-TU path otherwise
+  # (e.g. when the archive itself is the build's own
+  # NIXGG_SANDBOX_TARGET — see examples/fmt/default.nix, examples/gcc/
+  # default.nix for that negative case, and examples/mosh/default.nix
+  # for the case where it actually engages).
   # A list of { name, patterns } — name is a short label for the
   # group (shows up in shim logs), patterns are filepath.Match-style
   # globs (PLUS a literal "**" segment for "zero or more path

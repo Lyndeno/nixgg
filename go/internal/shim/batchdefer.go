@@ -32,7 +32,6 @@ func deferCompileToBatch(
 ) error {
 	m := batchmember.MemberRecord{
 		Group:      group,
-		TUID:       tuID,
 		Tool:       toolName,
 		Source:     srcRel,
 		OutName:    filepath.Base(output),

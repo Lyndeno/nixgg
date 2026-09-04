@@ -157,22 +157,11 @@ func classifyInputs(
 //     outputKey) check has a real, matching name on the submitted
 //     side too.
 func maybeSubmit(cfg *toolchain.Config, drvPath, path string, defaultSubmit bool) {
-	target := os.Getenv("NIXGG_SANDBOX_TARGET")
 	outputKey := "out"
 	submit := defaultSubmit
-	if target != "" {
-		if targets := parseTargetMap(target); targets != nil {
-			outputKey = ""
-			for pattern, key := range targets {
-				if matchesTarget(pattern, path) {
-					outputKey = key
-					break
-				}
-			}
-			submit = outputKey != ""
-		} else {
-			submit = matchesTarget(target, path)
-		}
+	if os.Getenv("NIXGG_SANDBOX_TARGET") != "" {
+		outputKey = targetOutputKey(path)
+		submit = outputKey != ""
 	}
 	if !submit {
 		return
