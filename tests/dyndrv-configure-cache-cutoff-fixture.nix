@@ -1,12 +1,12 @@
-# dynDrvConfigureCacheStdenv early-cutoff test fixture, driven by
-# tests/dyndrv-configure-cache-cutoff.sh. Same shape as
-# tests/configure-cache-cutoff-fixture.nix (constructs the package
-# DIRECTLY, not via pkgs.foo.override — nixpkgs' own
+# splitStdenv (splitAtConfigure=true, splitAtBuild=true) early-cutoff
+# test fixture, driven by tests/dyndrv-configure-cache-cutoff.sh. Same
+# shape as tests/configure-cache-cutoff-fixture.nix (constructs the
+# package DIRECTLY, not via pkgs.foo.override — nixpkgs' own
 # .override/.overrideAttrs reapplication always re-invokes the wrapped
 # function with its ORIGINAL args first, so a src substitution applied
-# that way never reaches group A at all), parameterized to drive three
-# scenarios: baseline, an edit to a file the filter excludes, an edit
-# to a file it includes.
+# that way never reaches the configure stage at all), parameterized to
+# drive three scenarios: baseline, an edit to a file the filter
+# excludes, an edit to a file it includes.
 #
 # `package` selects which fixture package to build — "hello"
 # (single-output) or "gdbm" (multi-output: out/dev/info/lib/man,
@@ -21,7 +21,7 @@ let
   flake = builtins.getFlake (toString flakeDir);
   nixpkgsFlake = flake.inputs.nix-15793.inputs.nixpkgs;
   pkgs = nixpkgsFlake.legacyPackages.${builtins.currentSystem};
-  dynDrvConfigureCacheStdenv = flake.outputs.packages.${builtins.currentSystem}.dynDrvConfigureCacheStdenv;
+  splitStdenv = flake.outputs.packages.${builtins.currentSystem}.splitStdenv;
   configureSrcFilterPresets = flake.outputs.packages.${builtins.currentSystem}.configureSrcFilterPresets;
 
   fixtures = {
@@ -65,8 +65,10 @@ let
 
   src = if edit == null then f.src else editedSrc;
 in
-(dynDrvConfigureCacheStdenv {
+(splitStdenv {
   stdenv = pkgs.stdenv;
+  splitAtConfigure = true;
+  splitAtBuild = true;
   configureSrcFilter = {
     includePatterns = configureSrcFilterPresets.autotools;
     existenceStubs = f.existenceStubs;

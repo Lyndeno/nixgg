@@ -258,16 +258,16 @@
             patchedNix  = patchedNix;
           };
 
-          # dynDrvStdenv wraps an EXISTING stdenv (nixpkgsFun's own, or
+          # splitStdenv wraps an EXISTING stdenv (nixpkgsFun's own, or
           # any package's `.stdenv`) so `pkgs.foo.override { stdenv =
-          # dynDrvStdenv; }` runs foo's unpack/patch/configure/build as
-          # a builder-rpc-v0 derivation while leaving its own
-          # install/fixup/installCheck/meta completely untouched. See
-          # nix/dynDrvStdenv.nix's own top comment for the mechanism
-          # and current scope, and README.md's "Upgrade an existing
-          # nixpkgs package" section for usage.
-          dynDrvStdenv = import ./nix/dynDrvStdenv.nix {
-            inherit (pkgs) lib config;
+          # splitStdenv { ...; splitAtBuild = true; }; }` runs foo's
+          # configure/build (or just build, or just configure) as a
+          # builder-rpc-v0 derivation depending on which of
+          # splitAtConfigure/splitAtBuild is set, while leaving
+          # whatever comes after untouched. See nix/splitStdenv.nix's
+          # own top comment for the mechanism and README.md for usage.
+          splitStdenv = import ./nix/splitStdenv.nix {
+            inherit (pkgs) lib config stdenvNoCC;
             inherit (pkgs) bash coreutils gnumake;
             gcc         = toolchain.gcc;
             nixgg       = nixggBin;
@@ -276,19 +276,20 @@
             inherit system;
           };
 
-          # dynDrvStdenv applied to real, upstream nixpkgs packages —
-          # unmodified `pkgs.foo.override { stdenv = ...; }`, no
-          # nixgg-specific package.nix anywhere. Distinct names from
-          # the mkNixggBuild-based `hello`/`mosh` examples above (which
-          # build nixgg's own example/ dir and a hand-written mosh
-          # call, respectively) — these instead prove the "upgrade an
-          # EXISTING nixpkgs derivation" story from README.md, so they
-          # need to stay visibly separate rather than shadow those.
+          # splitStdenv { splitAtBuild = true; } applied to real,
+          # upstream nixpkgs packages — unmodified `pkgs.foo.override {
+          # stdenv = ...; }`, no nixgg-specific package.nix anywhere.
+          # Distinct names from the mkNixggBuild-based `hello`/`mosh`
+          # examples above (which build nixgg's own example/ dir and a
+          # hand-written mosh call, respectively) — these instead
+          # prove the "upgrade an EXISTING nixpkgs derivation" story
+          # from README.md, so they need to stay visibly separate
+          # rather than shadow those.
           #
           # Three distinct build-system shapes, matching what was
-          # verified directly while building dynDrvStdenv (see its own
-          # top comment and README.md's "Upgrade an existing nixpkgs
-          # package" section):
+          # verified directly while building this mechanism (see
+          # nix/splitStdenv.nix's own top comment and README.md's
+          # "Upgrade an existing nixpkgs package" section):
           #   - hello: plain autotools, doCheck + postInstallCheck.
           #   - mosh:  autotools + autoreconfHook (setup-hook-injected
           #            phase — the case that broke a naive hardcoded
@@ -297,44 +298,43 @@
           #            custom checkPhase running `ctest` — AND the
           #            "exec one of its own binaries mid-build" case
           #            (contrib/gen_html). Plain `pkgs.zstd.override {
-          #            stdenv = dynDrvStdenv { stdenv = pkgs.stdenv; }; }`
-          #            fails with "./gen_html: Permission denied" —
-          #            confirmed directly — because gen_html is itself
-          #            an unresolved drvref stub at the moment zstd's
-          #            own cmake graph tries to exec it, and no plain
-          #            nixpkgs-level `.overrideAttrs` can reach phase1
-          #            to patch it (see examples/zstd-dyndrv/default.nix
-          #            for exactly why). Fixed via dynDrvStdenv's
-          #            extraPhase1Attrs escape hatch — a phase-chained
-          #            mkNixggBuild call pre-builds gen_html, and
-          #            extraPhase1Attrs's postPatch points zstd's own
-          #            cmake at that already-resolved binary instead of
-          #            letting cmake build+exec its own.
+          #            stdenv = splitStdenv { stdenv = pkgs.stdenv;
+          #            splitAtBuild = true; }; }` fails with
+          #            "./gen_html: Permission denied" — confirmed
+          #            directly — because gen_html is itself an
+          #            unresolved drvref stub at the moment zstd's own
+          #            cmake graph tries to exec it, and no plain
+          #            nixpkgs-level `.overrideAttrs` can reach the
+          #            build stage to patch it (see
+          #            examples/zstd-dyndrv/default.nix for exactly
+          #            why). Fixed via splitStdenv's extraBuildAttrs
+          #            escape hatch — a phase-chained mkNixggBuild call
+          #            pre-builds gen_html, and extraBuildAttrs's
+          #            postPatch points zstd's own cmake at that
+          #            already-resolved binary instead of letting
+          #            cmake build+exec its own.
           dynDrvExamples = {
-            hello-dyndrv = pkgs.hello.override { stdenv = dynDrvStdenv { stdenv = pkgs.stdenv; }; };
-            mosh-dyndrv = pkgs.mosh.override { stdenv = dynDrvStdenv { stdenv = pkgs.stdenv; }; };
+            hello-dyndrv = pkgs.hello.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; }; };
+            mosh-dyndrv = pkgs.mosh.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; }; };
             zstd-dyndrv = import ./examples/zstd-dyndrv {
-              inherit pkgs mkNixggBuild dynDrvStdenv;
+              inherit pkgs mkNixggBuild;
+              dynDrvStdenv = args: splitStdenv (args // { splitAtBuild = true; });
             };
           };
 
-          # configureCacheStdenv splits stdenv.mkDerivation at the
-          # configure/build boundary, not build/install like
-          # dynDrvStdenv — see nix/configureCacheStdenv.nix's top
+          # splitStdenv { splitAtConfigure = true; } splits
+          # stdenv.mkDerivation at the configure/build boundary, not
+          # build/install like above — see nix/splitStdenv.nix's top
           # comment for the mechanism. hello covers autotools,
           # single-output; zstd covers cmake, multi-output
           # (out/bin/dev/man). Unlike zstd-dyndrv, zstd-cache needs no
-          # extraPhase1Attrs workaround for gen_html, since there's no
+          # extraBuildAttrs workaround for gen_html, since there's no
           # sandbox for it to trip over.
-          configureCacheStdenv = import ./nix/configureCacheStdenv.nix {
-            inherit (pkgs) lib config stdenvNoCC;
-            nixpkgsPath = nixpkgs;
-          };
           configureSrcFilterPresets = import ./nix/configureSrcFilterPresets.nix;
           batchGroupPresets = import ./nix/batchGroupPresets.nix;
           configureCacheExamples = {
-            hello-cache = pkgs.hello.override { stdenv = configureCacheStdenv { stdenv = pkgs.stdenv; }; };
-            zstd-cache = pkgs.zstd.override { stdenv = configureCacheStdenv { stdenv = pkgs.stdenv; }; };
+            hello-cache = pkgs.hello.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtConfigure = true; }; };
+            zstd-cache = pkgs.zstd.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtConfigure = true; }; };
             # Same as hello-cache, but with configureSrcFilter: an
             # edit to a source file the autotools preset excludes
             # never touches configure's own input, so configure
@@ -342,8 +342,9 @@
             # that's hello's AC_CONFIG_SRCDIR argument, checked for
             # existence only by the generated configure script.
             hello-cache-filtered = pkgs.hello.override {
-              stdenv = configureCacheStdenv {
+              stdenv = splitStdenv {
                 stdenv = pkgs.stdenv;
+                splitAtConfigure = true;
                 configureSrcFilter = {
                   includePatterns = configureSrcFilterPresets.autotools;
                   existenceStubs = [ "src/hello.c" ];
@@ -364,8 +365,9 @@
             # test/CMakeLists.txt enumerates a dozen targets that'd
             # otherwise need chasing one at a time.
             fmt-cache-filtered = pkgs.fmt.override {
-              stdenv = configureCacheStdenv {
+              stdenv = splitStdenv {
                 stdenv = pkgs.stdenv;
+                splitAtConfigure = true;
                 configureSrcFilter = {
                   includePatterns = configureSrcFilterPresets.cmake ++ [
                     "include/fmt/*.h"
@@ -382,27 +384,19 @@
             };
           };
 
-          # dynDrvConfigureCacheStdenv combines both tricks above:
-          # group A is configureCacheStdenv's own configure-only
-          # group (optionally configureSrcFilter'd), group B is
-          # dynDrvStdenv's build-only sandboxed group restored on top
-          # of it, group C is dynDrvStdenv's install-onward group
-          # unchanged. See nix/dynDrvConfigureCacheStdenv.nix's top
-          # comment for why pulling configure out of the sandbox is
-          # sound (bypassed() passthrough) and README.md for usage.
-          dynDrvConfigureCacheStdenv = import ./nix/dynDrvConfigureCacheStdenv.nix {
-            inherit (pkgs) lib config stdenvNoCC;
-            inherit (pkgs) bash coreutils gnumake;
-            gcc         = toolchain.gcc;
-            nixgg       = nixggBin;
-            patchedNix  = patchedNix;
-            nixpkgsPath = nixpkgs;
-            inherit system;
-          };
+          # splitStdenv { splitAtConfigure = true; splitAtBuild =
+          # true; } combines both tricks above: a configure-only stage
+          # (optionally configureSrcFilter'd), a build-only sandboxed
+          # stage restored on top of it, and an install-onward stage
+          # unchanged. See nix/splitStdenv.nix's top comment for why
+          # pulling configure out of the sandbox is sound (bypassed()
+          # passthrough) and README.md for usage.
           dynDrvConfigureCacheExamples = {
             hello-dyndrv-configure-cached = pkgs.hello.override {
-              stdenv = dynDrvConfigureCacheStdenv {
+              stdenv = splitStdenv {
                 stdenv = pkgs.stdenv;
+                splitAtConfigure = true;
+                splitAtBuild = true;
                 configureSrcFilter = {
                   includePatterns = configureSrcFilterPresets.autotools;
                   existenceStubs = [ "src/hello.c" ];
@@ -411,30 +405,34 @@
             };
             # mosh through the combined mechanism: autotools +
             # autoreconfHook, the setup-hook-injected-phase case that
-            # broke a naive hardcoded `phases` list in dynDrvStdenv's
-            # own early history (see its top comment). Group A here
-            # never hardcodes `phases` (uses dontBuild/dontInstall/...
-            # toggles instead, same as configureCacheStdenv's own
-            # group A), so autoreconfHook's `appendToVar
+            # broke a naive hardcoded `phases` list in this
+            # mechanism's own early history (see nix/splitStdenv.nix's
+            # top comment). The configure stage here never hardcodes
+            # `phases` (uses dontBuild/dontInstall/... toggles
+            # instead), so autoreconfHook's `appendToVar
             # preConfigurePhases autoreconfPhase` still applies
             # normally. No configureSrcFilter — mosh isn't in the
             # verified preset set.
             mosh-dyndrv-configure-cached = pkgs.mosh.override {
-              stdenv = dynDrvConfigureCacheStdenv { stdenv = pkgs.stdenv; };
+              stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtConfigure = true; splitAtBuild = true; };
             };
             # zstd through the combined mechanism: multi-output
             # (out/bin/dev/man), a real ctest-based checkPhase, and
             # the same gen_html mid-build-exec problem zstd-dyndrv
-            # documents above — but here the fix has to reach BOTH
-            # group A (where cmake's own Makefile generation happens)
-            # and group B (which restores group A's tree and needs
-            # its own copy of the patched CMakeLists.txt if it ever
-            # reconfigures anything downstream). Patching group B
-            # alone reproduces the exact same "./gen_html: Permission
-            # denied" failure as no patch at all — confirmed directly.
-            # No configureSrcFilter here: zstd's own CMakeLists.txt
-            # uses file(GLOB ...), so filtering can't preserve
-            # early-cutoff for it (same reasoning as zstd-cache above).
+            # documents above — but here the fix has to reach BOTH the
+            # configure stage (where cmake's own Makefile generation
+            # happens) and the build stage (which restores the
+            # configure stage's tree and needs its own copy of the
+            # patched CMakeLists.txt if it ever reconfigures anything
+            # downstream). Patching only the build stage reproduces
+            # the exact same "./gen_html: Permission denied" failure
+            # as no patch at all — confirmed directly. Both stages
+            # need the identical patch text, so this uses extraAttrs
+            # (applies to every stage) rather than duplicating it into
+            # two role-specific hatches. No configureSrcFilter here:
+            # zstd's own CMakeLists.txt uses file(GLOB ...), so
+            # filtering can't preserve early-cutoff for it (same
+            # reasoning as zstd-cache above).
             zstd-dyndrv-configure-cached =
               let
                 genHtml = mkNixggBuild {
@@ -462,12 +460,11 @@
                 '';
               in
               pkgs.zstd.override {
-                stdenv = dynDrvConfigureCacheStdenv {
+                stdenv = splitStdenv {
                   stdenv = pkgs.stdenv;
-                  extraGroupAAttrs = finalAttrs: old: old // {
-                    postPatch = old.postPatch + genHtmlPatch;
-                  };
-                  extraGroupBAttrs = finalAttrs: old: old // {
+                  splitAtConfigure = true;
+                  splitAtBuild = true;
+                  extraAttrs = finalAttrs: old: old // {
                     postPatch = old.postPatch + genHtmlPatch;
                   };
                 };
@@ -480,8 +477,10 @@
             # (out/dev/info/lib/man) — its own AC_CONFIG_SRCDIR
             # argument is src/gdbmdefs.h.
             gdbm-dyndrv-configure-cached = pkgs.gdbm.override {
-              stdenv = dynDrvConfigureCacheStdenv {
+              stdenv = splitStdenv {
                 stdenv = pkgs.stdenv;
+                splitAtConfigure = true;
+                splitAtBuild = true;
                 configureSrcFilter = {
                   includePatterns = configureSrcFilterPresets.autotools;
                   existenceStubs = [ "src/gdbmdefs.h" ];
@@ -896,15 +895,12 @@
           # mkNixggBuild is a function; expose so consumers can build
           # their own targets in downstream flakes.
           inherit mkNixggBuild;
-          # dynDrvStdenv is likewise a function (stdenv -> stdenv);
+          # splitStdenv is likewise a function (stdenv -> stdenv);
           # expose so `pkgs.foo.override { stdenv =
-          # nixgg.packages.${system}.dynDrvStdenv; }` works from any
-          # downstream flake, no vendoring required.
-          inherit dynDrvStdenv;
-          # Same reasoning as dynDrvStdenv above.
-          inherit configureCacheStdenv;
+          # nixgg.packages.${system}.splitStdenv { splitAtBuild = true; };
+          # }` works from any downstream flake, no vendoring required.
+          inherit splitStdenv;
           inherit configureSrcFilterPresets;
-          inherit dynDrvConfigureCacheStdenv;
           default = envShell;
         }
       );

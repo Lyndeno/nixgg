@@ -9,17 +9,17 @@
 #
 # A plain .overrideAttrs patch can't fix this: nixpkgs' own
 # .override/.overrideAttrs reapplication always rebuilds the wrapped
-# package from its ORIGINAL attrs first, and dynDrvStdenv's phase1 is
-# closed over inside that call — before any .overrideAttrs the caller
-# wrote gets a chance to run (verified directly: both orderings produce
-# a byte-identical phase1 hash to the unpatched build). Use
-# dynDrvStdenv's `extraPhase1Attrs` instead — spliced in before phase1
-# is computed.
+# package from its ORIGINAL attrs first, and the build stage is closed
+# over inside that call — before any .overrideAttrs the caller wrote
+# gets a chance to run (verified directly: both orderings produce a
+# byte-identical build-stage hash to the unpatched build). Use
+# splitStdenv's `extraBuildAttrs` instead — spliced in before the
+# build stage is computed.
 #
 # Two-phase structure, same shape as examples/two-phase.nix:
 #   phase A (mkNixggBuild) -> builds gen_html.cpp standalone (one TU,
 #            no cmake) into a real binary.
-#   phase B (dynDrvStdenv, extraPhase1Attrs) -> zstd's real cmake
+#   phase B (splitStdenv, extraBuildAttrs) -> zstd's real cmake
 #            build, patched so gen_html's CMakeLists.txt calls phase
 #            A's binary directly instead of building+execing its own.
 {
@@ -47,7 +47,7 @@ in
 pkgs.zstd.override {
   stdenv = dynDrvStdenv {
     stdenv = pkgs.stdenv;
-    extraPhase1Attrs = finalAttrs: old: old // {
+    extraBuildAttrs = finalAttrs: old: old // {
       # Removes gen_html's add_executable + DEPENDS edge, and points
       # GENHTML_BINARY at phase A's binary instead. Every other TU
       # still goes through dynDrvStdenv's real shim acceleration

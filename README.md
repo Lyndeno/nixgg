@@ -229,7 +229,7 @@ tool env.
 
 ## Upgrade an existing nixpkgs package
 
-`mkNixggBuild` is for builds you write yourself. `dynDrvStdenv` is for
+`mkNixggBuild` is for builds you write yourself. `splitStdenv` is for
 builds nixpkgs already wrote — any ordinary `stdenv.mkDerivation`
 package gets the builder-rpc-v0 treatment with a one-line `override`,
 no rewriting its `package.nix`. Same prerequisites as `mkNixggBuild`
@@ -240,10 +240,16 @@ for the `nixConfig` block and `patched-nix`):
 { pkgs, nixgg }:
 
 let
-  dynDrvStdenv = nixgg.packages.${pkgs.system}.dynDrvStdenv { stdenv = pkgs.stdenv; };
+  splitStdenv = nixgg.packages.${pkgs.system}.splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; };
 in
-pkgs.hello.override { stdenv = dynDrvStdenv; }
+pkgs.hello.override { stdenv = splitStdenv; }
 ```
+
+`splitStdenv` takes two independent booleans, `splitAtConfigure` and
+`splitAtBuild`, one per boundary it knows how to cut
+`stdenv.mkDerivation` at. Setting `splitAtBuild = true` (as above) is
+the "accelerate the whole build" case this section covers; the next
+two sections cover `splitAtConfigure` alone, and both together.
 
 Tested directly against real nixpkgs packages spanning the common
 build-system shapes — `hello` (autotools), `mosh` (autotools +
@@ -257,17 +263,17 @@ unmodified.
 
 ### How it works
 
-`dynDrvStdenv` overrides `mkDerivationFromStdenv` — the same seam
+`splitStdenv` overrides `mkDerivationFromStdenv` — the same seam
 nixpkgs' own `pkgsMusl`/`pkgsStatic`/ccache use, just with a much
 smaller radius: it changes how a package's derivation gets *built*,
 not the toolchain or the whole package set. Every override is scoped
 to the one package you apply it to via `.override { stdenv = ...; }`;
 nothing else in your `pkgs` set changes.
 
-Under the hood it splits `stdenv.mkDerivation` into two real
-derivations:
+With `splitAtBuild = true` and `splitAtConfigure = false`, it splits
+`stdenv.mkDerivation` into two real derivations:
 
-1. **Phase 1** (`unpackPhase` through `buildPhase`) runs as a
+1. **The build stage** (`unpackPhase` through `buildPhase`) runs as a
    `builder-rpc-v0` sandboxed derivation with nixgg's shims live on
    `PATH` — real `configurePhase`, real setup hooks (`autoreconfHook`,
    `cmake`, ...), real `make`/`ninja`, whatever the package actually
@@ -275,13 +281,13 @@ derivations:
    dynamic derivation exactly like `mkNixggBuild`. `nixgg assemble`
    then walks the resulting tree, resolves every shimmed output, and
    submits the whole tree as one dynamic derivation output.
-2. **Phase 2** (`checkPhase` through `distPhase`) is an ordinary
-   derivation seeded from phase 1's fully-resolved tree, running the
-   package's own unmodified `checkPhase`/`installPhase`/`fixupPhase`/
-   `installCheckPhase`/`meta` — so multi-output splitting, RPATH
-   shrinking, `ctest`/test-suite execution, and install-time checks
-   all still work exactly as nixpkgs wrote them, against real
-   binaries (not unresolved stubs).
+2. **The install stage** (`checkPhase` through `distPhase`) is an
+   ordinary derivation seeded from the build stage's fully-resolved
+   tree, running the package's own unmodified `checkPhase`/
+   `installPhase`/`fixupPhase`/`installCheckPhase`/`meta` — so
+   multi-output splitting, RPATH shrinking, `ctest`/test-suite
+   execution, and install-time checks all still work exactly as
+   nixpkgs wrote them, against real binaries (not unresolved stubs).
 
 ### Packages that exec their own binaries mid-build
 
@@ -298,14 +304,15 @@ Fix it with the same phase-chaining pattern `mkNixggBuild`'s own
 `examples/two-phase` and `examples/llvm` already use: build the helper
 standalone via `mkNixggBuild` first, then patch the wrapped package's
 build graph to call that already-resolved binary instead of building
-its own. The patch has to go through `dynDrvStdenv`'s
-`extraPhase1Attrs` parameter, not a plain `.overrideAttrs` — nixpkgs'
+its own. The patch has to go through `splitStdenv`'s
+`extraBuildAttrs` parameter, not a plain `.overrideAttrs` — nixpkgs'
 own `.override`/`.overrideAttrs` reapplication contract always
 re-invokes the package function with its *original*, unpatched attrs
 first, so an attrs-level patch applied via `.overrideAttrs` never
-reaches phase 1. `extraPhase1Attrs`/`extraPhase2Attrs` are spliced in
-before phase 1 is computed, at the `dynDrvStdenv { ...; }` call site
-itself:
+reaches the build stage. `extraConfigureAttrs`/`extraBuildAttrs`/
+`extraInstallAttrs` (and `extraAttrs`, which applies to every stage at
+once) are spliced in before the relevant stage is computed, at the
+`splitStdenv { ...; }` call site itself:
 
 ```nix
 { pkgs, mkNixggBuild, dynDrvStdenv }:
@@ -326,7 +333,7 @@ in
 pkgs.zstd.override {
   stdenv = dynDrvStdenv {
     stdenv = pkgs.stdenv;
-    extraPhase1Attrs = finalAttrs: old: old // {
+    extraBuildAttrs = finalAttrs: old: old // {
       postPatch = old.postPatch + ''
         substituteInPlace build/cmake/contrib/gen_html/CMakeLists.txt \
           --replace-fail \
@@ -344,48 +351,32 @@ pkgs.zstd.override {
 }
 ```
 
-See [examples/zstd-dyndrv/default.nix](examples/zstd-dyndrv/default.nix)
-for the full, tested version. `extraPhase1Attrs`'s `old` is phase 1's
-own attrset as `dynDrvStdenv` built it (already carrying the real
-package's `postPatch`, plus dynDrvStdenv's own shim-activation
+(`dynDrvStdenv` here is `args: splitStdenv (args // { splitAtBuild = true; })` —
+see [examples/zstd-dyndrv/default.nix](examples/zstd-dyndrv/default.nix)
+for the full, tested version, including how `flake.nix` wires that
+partial application up.) `extraBuildAttrs`'s `old` is the build
+stage's own attrset as `splitStdenv` built it (already carrying the
+real package's `postPatch`, plus its own shim-activation
 `postPatch`/`preBuild`) — not the raw, unmodified `package.nix`
 attrs — so appending to `old.postPatch`, as above, preserves
-everything already there. `extraPhase2Attrs` is the same shape for
-phase 2, mostly for symmetry: phase 2 *is* reachable via an ordinary
-`.overrideAttrs` on the returned package — only phase 1 has the
-reapplication problem.
-
-If you already have a package built through `dynDrvStdenv` and want
-to patch phase 1 without rebuilding the `dynDrvStdenv { ...; }` call
-site, use `.overridePhase1Attrs` — a `passthru` on the returned
-package with the same `finalAttrs: old: old // {...}` shape as
-`extraPhase1Attrs`, composing on top of it:
-
-```nix
-(pkgs.openssl.override { stdenv = dynDrvStdenv; }).overridePhase1Attrs (
-  finalAttrs: old: old // {
-    postPatch = old.postPatch + "sed -i ... crypto/mem.c\n";
-  }
-)
-```
-
-Same underlying cost as rebuilding the `dynDrvStdenv { ...; }` call
-site with an `extraPhase1Attrs` — phase 1 is reconstructed either
-way, by construction — just without hand-building a second
-`dynDrvStdenv` instance to get there.
+everything already there. `extraInstallAttrs` is the same shape for
+the install stage, mostly for symmetry: the install stage *is*
+reachable via an ordinary `.overrideAttrs` on the returned package —
+only the build/configure stages have the reapplication problem.
 
 ### Measured incremental-rebuild cost
 
 Per-TU acceleration only pays off when most translation units are
 actually unchanged. Two real measurements against openssl (`~2200`
-translation units) through `dynDrvStdenv`, both using
-`pkgs.openssl.override { stdenv = dynDrvStdenv { stdenv = pkgs.stdenv; }; }`
+translation units) through `splitStdenv { splitAtBuild = true; }`,
+both using
+`pkgs.openssl.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; }; }`
 as the baseline already built once:
 
 | Scenario | What changed | TUs recompiled | Non-TU drvs freshly built |
 |---|---|---|---|
 | Baseline (cold) | first build of 3.6.3 | 2213 / 2213 | everything |
-| One-file patch (the CI case) | one real declaration added to `crypto/mem.c`, via `.overridePhase1Attrs`'s `postPatch` | 2 / 2213 (`tu-libcrypto-lib-mem.o`, `tu-libcrypto-shlib-mem.o`) | 13 — the 7 engine `.so`s, `bin-libssl.so.3`/`bin-libcrypto.so.3`/`bin-openssl` that link the changed object, plus the outer wrapper drvs |
+| One-file patch (the CI case) | one real declaration added to `crypto/mem.c`, via a rebuilt `extraBuildAttrs`'s `postPatch` | 2 / 2213 (`tu-libcrypto-lib-mem.o`, `tu-libcrypto-shlib-mem.o`) | 13 — the 7 engine `.so`s, `bin-libssl.so.3`/`bin-libcrypto.so.3`/`bin-openssl` that link the changed object, plus the outer wrapper drvs |
 | Version bump (3.6.3 → 3.5.7) | full release bump, same package | 2153 / 2192 (98%) | effectively everything |
 
 The one-file-patch case is the realistic CI scenario this project
@@ -423,11 +414,12 @@ rebuilt" apart from "every TU rebuilt" — this can.
 
 ## Cache an existing package's configure step
 
-`dynDrvStdenv` accelerates the whole build/install split. Sometimes
-you don't need that much — you just want configure to stop rerunning
-every time you touch something downstream, like `installFlags` or a
-`postInstall`. `configureCacheStdenv` splits `stdenv.mkDerivation` at
-the configure/build boundary instead. It doesn't need the
+`splitStdenv { splitAtBuild = true; }` accelerates the whole
+build/install split. Sometimes you don't need that much — you just
+want configure to stop rerunning every time you touch something
+downstream, like `installFlags` or a `postInstall`.
+`splitStdenv { splitAtConfigure = true; }` splits `stdenv.mkDerivation`
+at the configure/build boundary instead. It doesn't need the
 `builder-rpc-v0` sandbox at all, because configure isn't compiling
 anything unknown — there's nothing to shim:
 
@@ -435,9 +427,9 @@ anything unknown — there's nothing to shim:
 { pkgs, nixgg }:
 
 let
-  configureCacheStdenv = nixgg.packages.${pkgs.system}.configureCacheStdenv;
+  splitStdenv = nixgg.packages.${pkgs.system}.splitStdenv;
 in
-pkgs.hello.override { stdenv = configureCacheStdenv { stdenv = pkgs.stdenv; }; }
+pkgs.hello.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtConfigure = true; }; }
 ```
 
 Changing anything after configure — `installFlags`, `postInstall`,
@@ -457,8 +449,9 @@ let
   configureSrcFilterPresets = nixgg.packages.${pkgs.system}.configureSrcFilterPresets;
 in
 pkgs.hello.override {
-  stdenv = configureCacheStdenv {
+  stdenv = splitStdenv {
     stdenv = pkgs.stdenv;
+    splitAtConfigure = true;
     configureSrcFilter = {
       includePatterns = configureSrcFilterPresets.autotools;
       existenceStubs = [ "src/hello.c" ]; # hello's own AC_CONFIG_SRCDIR arg
@@ -493,24 +486,27 @@ latter.
 
 ## Combining both: skip configure AND get per-TU acceleration
 
-`dynDrvStdenv` and `configureCacheStdenv` split a package at different
-boundaries, but the same package can use both. `dynDrvStdenv`'s
-configure step runs with nixgg's shims live but bypassed — every shim
-call is a plain passthrough exec, not a sandboxed one — so configure
-doesn't actually need the sandbox it happens to run inside. Pull it
-into its own `configureCacheStdenv`-shaped group, and the sandboxed
-group only has to do the build:
+`splitAtConfigure` and `splitAtBuild` split a package at different
+boundaries, but the same package can set both at once. With
+`splitAtBuild = true`, configure runs with nixgg's shims live but
+bypassed — every shim call is a plain passthrough exec, not a
+sandboxed one — so configure doesn't actually need the sandbox it
+happens to run inside. Setting `splitAtConfigure = true` too pulls it
+into its own configure-only stage, so the sandboxed stage only has to
+do the build:
 
 ```nix
 { pkgs, nixgg }:
 
 let
-  dynDrvConfigureCacheStdenv = nixgg.packages.${pkgs.system}.dynDrvConfigureCacheStdenv;
+  splitStdenv = nixgg.packages.${pkgs.system}.splitStdenv;
   configureSrcFilterPresets = nixgg.packages.${pkgs.system}.configureSrcFilterPresets;
 in
 pkgs.hello.override {
-  stdenv = dynDrvConfigureCacheStdenv {
+  stdenv = splitStdenv {
     stdenv = pkgs.stdenv;
+    splitAtConfigure = true;
+    splitAtBuild = true;
     configureSrcFilter = {
       includePatterns = configureSrcFilterPresets.autotools;
       existenceStubs = [ "src/hello.c" ];
@@ -520,19 +516,21 @@ pkgs.hello.override {
 ```
 
 Three derivations instead of two: configure (plain, unsandboxed,
-early-cutoff via `configureSrcFilter` — same as `configureCacheStdenv`
-above), build (sandboxed, real per-TU shim acceleration — same as
-`dynDrvStdenv`), install-onward (unmodified, copied from
-`dynDrvStdenv`'s own install group). An edit to a file configure
-never reads skips configure entirely; an edit to a source file only
-recompiles that file's own dynamic derivation. Tested against `hello`
-(autotools, with `configureSrcFilter`), `zstd` (cmake, 4 outputs, real
-`ctest` checkPhase, and the `gen_html` mid-build-exec fix — patched on
-both the configure and build group, since cmake's Makefile generation
-happens in the former), and `gdbm` (autotools, 5 outputs, covering
-multi-output + `configureSrcFilter` together). See
+early-cutoff via `configureSrcFilter` — same as `splitAtConfigure`
+alone above), build (sandboxed, real per-TU shim acceleration — same
+as `splitAtBuild` alone above), install-onward (unmodified, same as
+the install stage above). An edit to a file configure never reads
+skips configure entirely; an edit to a source file only recompiles
+that file's own dynamic derivation. Tested against `hello` (autotools,
+with `configureSrcFilter`), `zstd` (cmake, 4 outputs, real `ctest`
+checkPhase, and the `gen_html` mid-build-exec fix — patched via
+`extraAttrs` so the identical patch reaches both the configure and
+build stages, since cmake's Makefile generation happens in the
+former), and `gdbm` (autotools, 5 outputs, covering multi-output +
+`configureSrcFilter` together). See
 [.#hello-dyndrv-configure-cached](flake.nix) and
 [.#zstd-dyndrv-configure-cached](flake.nix) in `flake.nix`.
+
 
 ## Architecture
 

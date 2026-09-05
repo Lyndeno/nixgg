@@ -1,15 +1,15 @@
-# configureCacheStdenv early-cutoff test fixture, driven by
-# tests/configure-cache-cutoff.sh.
+# splitStdenv (splitAtConfigure=true) early-cutoff test fixture,
+# driven by tests/configure-cache-cutoff.sh.
 #
 # Constructs a package DIRECTLY (not via pkgs.foo.override — nixpkgs'
 # own .override/.overrideAttrs reapplication always re-invokes the
 # wrapped function with its ORIGINAL args first, discarding any prior
 # .overrideAttrs, so a src substitution applied that way never reaches
-# configureCacheStdenv's group A at all — confirmed directly while
-# building hello-cache-filtered/fmt-cache-filtered). This mirrors the
-# shape a real package.nix uses, parameterized to drive three
-# scenarios: baseline, an edit to a file the filter excludes, an edit
-# to a file it includes.
+# the configure stage at all — confirmed directly while building
+# hello-cache-filtered/fmt-cache-filtered). This mirrors the shape a
+# real package.nix uses, parameterized to drive three scenarios:
+# baseline, an edit to a file the filter excludes, an edit to a file
+# it includes.
 {
   flakeDir, # path to the nixgg checkout, passed by the driver script
   fixture, # "hello" or "fmt" — selects which real package to build like
@@ -19,7 +19,7 @@ let
   flake = builtins.getFlake (toString flakeDir);
   nixpkgsFlake = flake.inputs.nix-15793.inputs.nixpkgs;
   pkgs = nixpkgsFlake.legacyPackages.${builtins.currentSystem};
-  configureCacheStdenv = flake.outputs.packages.${builtins.currentSystem}.configureCacheStdenv;
+  splitStdenv = flake.outputs.packages.${builtins.currentSystem}.splitStdenv;
   configureSrcFilterPresets = flake.outputs.packages.${builtins.currentSystem}.configureSrcFilterPresets;
 
   fixtures = {
@@ -101,8 +101,9 @@ let
 in
 f.mk {
   inherit src;
-  stdenv = configureCacheStdenv {
+  stdenv = splitStdenv {
     stdenv = pkgs.stdenv;
+    splitAtConfigure = true;
     configureSrcFilter = f.configureSrcFilter;
   };
 }
