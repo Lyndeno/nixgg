@@ -1,5 +1,5 @@
 # configureSrcFilter — shrink a package's `src` to just the files
-# configurePhase reads, so configureCacheStdenv's group A doesn't
+# configurePhase reads, so splitStdenv's configure stage doesn't
 # invalidate when an unrelated source file changes.
 #
 # Doesn't use lib.fileset: that needs a real eval-time Path, but
@@ -11,7 +11,8 @@
 # outside includePatterns still changes src's content (this
 # derivation's input), so it must re-run, but if the copied-out
 # subset is byte-identical, its OUTPUT PATH doesn't change, so
-# whoever consumes it (group A) never sees a different input.
+# whoever consumes it (the configure stage) never sees a different
+# input.
 {
   lib,
   stdenvNoCC,

@@ -2,7 +2,7 @@
 name: nixgg-drv-graph-breakdown
 description: |
   Count exactly how many derivations a nixgg sandbox-mode build (mkNixggBuild /
-  dynDrvStdenv / batchGroups) breaks into, WITHOUT compiling a single translation
+  splitStdenv / batchGroups) breaks into, WITHOUT compiling a single translation
   unit. Builds only the outer wrapper's `^out` — which runs the real build command
   (make/ninja) with nixgg's shim doing cheap `nix derivation add` registration —
   then walks the registered .drv graph structurally via `nix show-derivation`.
@@ -18,7 +18,7 @@ description: |
 
 ## What this does
 
-For any nixgg sandbox-mode flake attribute (`mkNixggBuild` output, `dynDrvStdenv`-
+For any nixgg sandbox-mode flake attribute (`mkNixggBuild` output, `splitStdenv`-
 wrapped package, a `*-batch` example, LLVM's phase-chained attrs, etc.), reports
 the exact set and count of derivations the shim registered for that build —
 `tu-*.o.drv` compiles, `ar-*.a.drv` archives, `batch-*.a.drv` combined-archive
@@ -59,7 +59,7 @@ ATTR=.#mosh-batch    # or .#lua, .#llvm-min-tblgen, any mkNixggBuild-shaped attr
 
 # 1. Get the OUTER wrapper's own .drv path (not the .package attr — that one
 #    forces full resolution). `.drv` is mkNixggBuild's raw dyn-drv attrset;
-#    dynDrvStdenv-wrapped packages don't expose `.drv` directly — see below.
+#    splitStdenv-wrapped packages don't expose `.drv` directly — see below.
 outer=$("$PATCHED_NIX/bin/nix" eval --raw "${ATTR}.drv.drvPath")
 
 # 2. Build ONLY the outer wrapper's ^out. This runs make/ninja/cmake with
@@ -102,11 +102,11 @@ without compiling a single one of LLVM's ~2000 translation units.
   `tu-`/`ar-`/`bin-`/`batch-` drv's own `^out` forces a REAL compile/archive/
   link of that one member — fine for spot-checking one member, fatal to the
   "never force a build" property if done for the whole graph.
-- **`dynDrvStdenv`-wrapped packages (`hello-dyndrv`, `mosh-dyndrv-*`, etc.)
+- **`splitStdenv`-wrapped packages (`hello-dyndrv`, `mosh-dyndrv-*`, etc.)
   don't expose a top-level `.drv`** the same way `mkNixggBuild` outputs do —
-  the phase-1 sandboxed derivation is reachable via `nix derivation show
+  the build stage's sandboxed derivation is reachable via `nix derivation show
   .#foo` after `nix eval .#foo.drvPath`, but confirm the attrset shape first
-  (`nix eval .#foo --apply builtins.attrNames`) since the phase-1/phase-2
+  (`nix eval .#foo --apply builtins.attrNames`) since the build/install
   split means the interesting graph is nested one level differently than a
   plain `mkNixggBuild` result.
 - **Negative case ≠ bug.** `fmt-batch`/`gcc-batch` are DESIGNED to decline

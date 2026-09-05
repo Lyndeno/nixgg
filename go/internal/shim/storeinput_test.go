@@ -6,7 +6,7 @@ import (
 )
 
 // TestParseTargetMapDispatch pins that a plain single-target string
-// (dynDrvStdenv's "/nonexistent/..." sentinel, or a bare target name)
+// (splitStdenv's "/nonexistent/..." sentinel, or a bare target name)
 // is never mistaken for the JSON-map format, and vice versa — this
 // is the whole dispatch mechanism maybeSubmit/targetOutputKey rest
 // on, with no separate env var to say which shape is in play.

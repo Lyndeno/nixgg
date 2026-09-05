@@ -51,7 +51,7 @@ func usage() {
 
   assemble <root> <name>
          Sandbox-mode only. Walk <root> for drvref stubs left by shim
-         calls during a whole-tree build (dynDrvStdenv's phase 1),
+         calls during a whole-tree build (splitStdenv's build stage),
          build one drv that restores the tree and resolves every
          stub, and submit it as this derivation's "out" output.
 

@@ -1,5 +1,6 @@
-# dynDrvStdenv applied to zstd, demonstrating the phase-chaining
-# pattern for packages that exec one of their own binaries mid-build.
+# splitStdenv (splitAtBuild=true) applied to zstd, demonstrating the
+# phase-chaining pattern for packages that exec one of their own
+# binaries mid-build.
 #
 # zstd's cmake graph (with ZSTD_BUILD_CONTRIB on, nixpkgs' own default)
 # execs `contrib/gen_html` mid-build to render zstd_manual.html. In
@@ -25,7 +26,7 @@
 {
   pkgs,
   mkNixggBuild,
-  dynDrvStdenv,
+  splitStdenv,
 }:
 
 let
@@ -45,12 +46,13 @@ let
   };
 in
 pkgs.zstd.override {
-  stdenv = dynDrvStdenv {
+  stdenv = splitStdenv {
     stdenv = pkgs.stdenv;
+    splitAtBuild = true;
     extraBuildAttrs = finalAttrs: old: old // {
       # Removes gen_html's add_executable + DEPENDS edge, and points
       # GENHTML_BINARY at phase A's binary instead. Every other TU
-      # still goes through dynDrvStdenv's real shim acceleration
+      # still goes through splitStdenv's real shim acceleration
       # unmodified.
       postPatch =
         old.postPatch

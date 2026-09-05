@@ -144,7 +144,7 @@ func classifyInputs(
 //   - A plain string (today's format, still the default): a single
 //     path/basename/absolute-path pattern, matched via matchesTarget.
 //     A match submits under output "out" — mkNixggBuild's single-
-//     target shape, and dynDrvStdenv's own "/nonexistent/..."
+//     target shape, and splitStdenv's own "/nonexistent/..."
 //     never-match sentinel, both keep working unchanged.
 //   - A JSON object {"<pattern>": "<outputKey>", ...} — a multi-
 //     target mkNixggBuild build. Each key is matched the same way a

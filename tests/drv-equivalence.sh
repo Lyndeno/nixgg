@@ -81,8 +81,8 @@ run_fixture() {
   #     names its OWN target drvs "<outerBuildName>-<targetKey>" (no
   #     "bin-"/"ar-" prefix at all — see
   #     go/internal/shim/storeinput.go's multiTargetName docstring
-  #     for why), while dynDrvStdenv/dynDrvConfigureCacheStdenv (which
-  #     never set NIXGG_SANDBOX_TARGET to the JSON-map shape) still
+  #     for why), while splitStdenv's build stage (which never sets
+  #     NIXGG_SANDBOX_TARGET to the JSON-map shape) still
   #     produce the OLD "bin-<outName>"/"ar-<outName>" names for their
   #     own per-TU link/archive drvs. Both shapes are real and need
   #     to match here — "^[a-z0-9]+-nixgg-" catches the former,

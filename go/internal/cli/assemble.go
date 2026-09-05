@@ -1,6 +1,6 @@
 // cmdAssemble implements `nixgg assemble <root> <name>`.
 //
-// dynDrvStdenv's phase-1 postBuild step: <root> is a tree of real
+// splitStdenv's build-stage postBuild step: <root> is a tree of real
 // files interleaved with drvref stubs (one per cc/c++/ar/link call the
 // shims intercepted — see internal/drvref). Walk it, build one
 // assembly drv whose builder restores the tree and overlays each stub

@@ -1,15 +1,16 @@
-# Shared helpers between nix/dynDrvStdenv.nix and
-# nix/dynDrvConfigureCacheStdenv.nix: five bindings that are
-# byte-for-byte identical text in both files (confirmed via diff),
-# extracted here so a fix to one of them (see git history: 1d605d5,
-# 9bec045 — both had to be applied by hand to both files) only needs
-# to happen once.
+# Shell-script-generating helpers used by nix/splitStdenv.nix's build
+# stage and final-stage restore logic. Originally extracted because
+# they were byte-for-byte identical text duplicated across two now-
+# deleted files (dynDrvStdenv.nix, dynDrvConfigureCacheStdenv.nix; see
+# git history — 1d605d5, 9bec045 — both bugs had to be fixed by hand
+# in both copies before this extraction). Kept as its own file now
+# that there's only one caller: these are pure shell-script factories,
+# a different kind of thing from splitStdenv.nix's own Nix-level
+# stage-wiring logic.
 #
-# Every binding here closes over exactly the params both callers
-# already share (lib, nixgg, patchedNix, bash, coreutils, gcc,
-# gnumake, system) — dynDrvConfigureCacheStdenv.nix's extra params
-# (stdenvNoCC, config, nixpkgsPath) are NOT needed by any of these
-# five, which is what makes lifting them out safe.
+# Every binding here closes over exactly the params splitStdenv.nix's
+# build stage needs (lib, nixgg, patchedNix, bash, coreutils, gcc,
+# gnumake, system) — its configure-only stage needs none of these.
 {
   lib,
   patchedNix,
@@ -32,7 +33,7 @@
   # tree.
   #
   # knownStorePathsJSON is a parameter (not computed once here) because
-  # dynDrvStdenv wraps an arbitrary existing package — the real store
+  # splitStdenv wraps an arbitrary existing package — the real store
   # paths the shim needs to recognize vary per package and are only
   # known from probeArgs.buildInputs, read per-call by each caller.
   ggShimsOnPath = knownStorePathsJSON: ''

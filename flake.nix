@@ -317,8 +317,7 @@
             hello-dyndrv = pkgs.hello.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; }; };
             mosh-dyndrv = pkgs.mosh.override { stdenv = splitStdenv { stdenv = pkgs.stdenv; splitAtBuild = true; }; };
             zstd-dyndrv = import ./examples/zstd-dyndrv {
-              inherit pkgs mkNixggBuild;
-              dynDrvStdenv = args: splitStdenv (args // { splitAtBuild = true; });
+              inherit pkgs mkNixggBuild splitStdenv;
             };
           };
 

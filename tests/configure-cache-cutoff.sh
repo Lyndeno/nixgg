@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Regression test: configureCacheStdenv's early-cutoff actually holds.
+# Regression test: splitStdenv's (splitAtConfigure=true) early-cutoff
+# actually holds.
 #
-# For each fixture (hello: autotools, fmt: cmake), builds group A
-# (the *-configure-<version> derivation) three ways and compares its
-# ggtree OUTPUT PATH:
+# For each fixture (hello: autotools, fmt: cmake), builds the
+# configure stage (the *-configure-<version> derivation) three ways
+# and compares its ggtree OUTPUT PATH:
 #
 #   baseline   — real, unedited src
 #   excluded   — src edited at a file configureSrcFilter's
@@ -11,14 +12,14 @@
 #   included   — src edited at a file the filter DOES cover
 #
 # Early-cutoff means: excluded must produce the SAME ggtree path as
-# baseline (the edit never reaches group A's actual input content,
-# so CA collapses the rebuild back to the same output) — while
-# included must produce a DIFFERENT one (a negative control: if this
-# ALSO matched baseline, the filter would be excluding everything,
-# not correctly discriminating).
+# baseline (the edit never reaches the configure stage's actual input
+# content, so CA collapses the rebuild back to the same output) —
+# while included must produce a DIFFERENT one (a negative control: if
+# this ALSO matched baseline, the filter would be excluding
+# everything, not correctly discriminating).
 #
-# This only checks the caching *mechanism* (nix/configureCacheStdenv.nix
-# + nix/configureSrcFilter.nix) — whether a build succeeds/runs is
+# This only checks the caching *mechanism* (nix/splitStdenv.nix +
+# nix/configureSrcFilter.nix) — whether a build succeeds/runs is
 # tests/smoke.sh's CONFIGCACHE set's job, not this script's.
 #
 # Env knobs:
@@ -54,16 +55,16 @@ extra-system-features = builder-rpc-v0
 store = local?root=$ALT_STORE
 "
 
-# groupA_ggtree_path <edit-arg>
+# configureStage_ggtree_path <edit-arg>
 #
-# Instantiates the fixture with the given edit, extracts group A's
-# own derivation (the one named *-configure-<version>, distinct from
-# both the configureSrcFilter derivation and group B — see
-# nix/configureCacheStdenv.nix's naming comment), builds ONLY its
+# Instantiates the fixture with the given edit, extracts the configure
+# stage's own derivation (the one named *-configure-<version>,
+# distinct from both the configureSrcFilter derivation and the final
+# stage — see nix/splitStdenv.nix's naming comment), builds ONLY its
 # "ggtree" output, and prints the resulting real store path.
-groupA_ggtree_path() {
+configureStage_ggtree_path() {
   local edit_arg="$1"
-  local outer_drv group_a_drv
+  local outer_drv configure_stage_drv
 
   outer_drv=$("$PATCHED_NIX/bin/nix-instantiate" --impure \
     --arg flakeDir "$nixgg_root" \
@@ -75,7 +76,7 @@ groupA_ggtree_path() {
       return 1
     }
 
-  group_a_drv=$("$PATCHED_NIX/bin/nix" show-derivation "$outer_drv" 2>/dev/null \
+  configure_stage_drv=$("$PATCHED_NIX/bin/nix" show-derivation "$outer_drv" 2>/dev/null \
     | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -83,14 +84,14 @@ info = list(d['derivations'].values())[0]
 matches = [k for k in info['inputs']['drvs'] if '-configure-' in k]
 print(matches[0] if matches else '')
 ")
-  if [[ -z "$group_a_drv" ]]; then
-    echo "  could not find group A derivation (edit=$edit_arg)" >&2
+  if [[ -z "$configure_stage_drv" ]]; then
+    echo "  could not find configure stage derivation (edit=$edit_arg)" >&2
     return 1
   fi
 
   "$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link --print-out-paths \
-    "/nix/store/$group_a_drv^ggtree" 2>/tmp/nixgg-cutoff-build.log | tail -1 || {
-      echo "  group A build failed (edit=$edit_arg); see /tmp/nixgg-cutoff-build.log" >&2
+    "/nix/store/$configure_stage_drv^ggtree" 2>/tmp/nixgg-cutoff-build.log | tail -1 || {
+      echo "  configure stage build failed (edit=$edit_arg); see /tmp/nixgg-cutoff-build.log" >&2
       tail -10 /tmp/nixgg-cutoff-build.log >&2
       return 1
     }
@@ -101,22 +102,22 @@ run_fixture() {
   printf '\033[1;36m===== %s =====\033[0m\n' "$fixture"
 
   local baseline excluded included
-  baseline=$(groupA_ggtree_path "") || return 1
+  baseline=$(configureStage_ggtree_path "") || return 1
   echo "  baseline: $baseline"
 
-  excluded=$(groupA_ggtree_path "excluded") || return 1
+  excluded=$(configureStage_ggtree_path "excluded") || return 1
   echo "  excluded: $excluded"
 
-  included=$(groupA_ggtree_path "included") || return 1
+  included=$(configureStage_ggtree_path "included") || return 1
   echo "  included: $included"
 
   local ok=1
   if [[ "$excluded" != "$baseline" ]]; then
-    printf '\033[1;31m  FAIL\033[0m excluded-file edit changed group A output — early-cutoff broken\n' >&2
+    printf '\033[1;31m  FAIL\033[0m excluded-file edit changed configure stage output — early-cutoff broken\n' >&2
     ok=0
   fi
   if [[ "$included" == "$baseline" ]]; then
-    printf '\033[1;31m  FAIL\033[0m included-file edit did NOT change group A output — filter not discriminating (excludes everything?)\n' >&2
+    printf '\033[1;31m  FAIL\033[0m included-file edit did NOT change configure stage output — filter not discriminating (excludes everything?)\n' >&2
     ok=0
   fi
 

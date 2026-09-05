@@ -1,10 +1,10 @@
-// Package assemble walks a build tree left behind by a dynDrvStdenv
-// phase-1 buildPhase and finds every drvref stub the nixgg shims wrote
-// in place of a real artifact.
+// Package assemble walks a build tree left behind by a splitStdenv
+// build-stage buildPhase and finds every drvref stub the nixgg shims
+// wrote in place of a real artifact.
 //
-// dynDrvStdenv (unlike mkNixggBuild) has no single target — the tree
-// can have dozens of shimmed outputs — so stubs are discovered by
-// walking, not by argument parsing.
+// splitStdenv's build stage (unlike mkNixggBuild) has no single
+// target — the tree can have dozens of shimmed outputs — so stubs are
+// discovered by walking, not by argument parsing.
 package assemble
 
 import (

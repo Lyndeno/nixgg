@@ -15,11 +15,11 @@
 # have no single `src` — they are multi-phase, one source per phase.
 #
 # Cheap by default (EXAMPLES=quick, ~2 min). The expensive ones are
-# opt-in because llvm alone is ~1500 TUs. The dynDrvStdenv examples
-# (hello-dyndrv/mosh-dyndrv/zstd-dyndrv) and the configureCacheStdenv
-# examples (hello-cache/zstd-cache) always run alongside QUICK/SLOW —
-# see DYNDRV/CONFIGCACHE below for why they need `nix run` instead of
-# a direct exec.
+# opt-in because llvm alone is ~1500 TUs. The splitAtBuild-only
+# examples (hello-dyndrv/mosh-dyndrv/zstd-dyndrv) and the
+# splitAtConfigure-only examples (hello-cache/zstd-cache) always run
+# alongside QUICK/SLOW — see DYNDRV/CONFIGCACHE below for why they
+# need `nix run` instead of a direct exec.
 #
 # Usage:
 #   tests/smoke.sh                 # quick set + dyndrv/cache examples
@@ -69,14 +69,15 @@ SLOW=(
   "llvm|bin/llc|%s --version"
 )
 
-# dynDrvStdenv examples (nix/dynDrvStdenv.nix) — an existing nixpkgs
-# package wrapped verbatim, not a mkNixggBuild fixture. Structurally
-# different bug class than the ones above: these exercise multi-output
-# splitting and self-rpath rewriting across the phase1/phase2 split,
-# neither of which a single-target mkNixggBuild fixture can trigger.
-# zstd-dyndrv's default output is "bin" (nixpkgs' outputsToInstall),
-# which is exactly the output that multi-output collapse and rpath
-# corruption hit — keep it pinned here rather than testing "out".
+# splitAtBuild-only examples (nix/splitStdenv.nix) — an existing
+# nixpkgs package wrapped verbatim, not a mkNixggBuild fixture.
+# Structurally different bug class than the ones above: these exercise
+# multi-output splitting and self-rpath rewriting across the
+# build/install split, neither of which a single-target mkNixggBuild
+# fixture can trigger. zstd-dyndrv's default output is "bin" (nixpkgs'
+# outputsToInstall), which is exactly the output that multi-output
+# collapse and rpath corruption hit — keep it pinned here rather than
+# testing "out".
 #
 # Verified via `nix run`/`nix shell` ONLY, never a direct exec of the
 # predicted $ALT_STORE path (unlike QUICK/SLOW below): these binaries'
@@ -99,19 +100,19 @@ DYNDRV=(
   "zstd-dyndrv|bin/zstd|%s --version"
 )
 
-# configureCacheStdenv examples (nix/configureCacheStdenv.nix) — same
-# "wrap an existing nixpkgs package" story as DYNDRV above, but split
-# at the configure/build boundary instead of build/install, and with
-# no sandbox/shims/RPC at all (see the file's own top comment). Same
-# `nix run`-only verification rationale as DYNDRV: zstd-cache's
-# multi-output bin/zstd needs its own sibling "out" output's
-# libzstd.so.1, which exists only inside $ALT_STORE. hello-cache-filtered
-# and fmt-cache-filtered additionally exercise configureSrcFilter's
-# real early-cutoff win (shrinking group A's own `src` input so an
-# edit outside the filtered set never re-runs configure) — this smoke
-# test only covers "does it still build and run correctly", not the
-# caching behavior itself. See tests/configure-cache-cutoff.sh for the
-# automated check of the caching mechanism itself.
+# splitAtConfigure-only examples (nix/splitStdenv.nix) — same "wrap an
+# existing nixpkgs package" story as DYNDRV above, but split at the
+# configure/build boundary instead of build/install, and with no
+# sandbox/shims/RPC at all. Same `nix run`-only verification rationale
+# as DYNDRV: zstd-cache's multi-output bin/zstd needs its own sibling
+# "out" output's libzstd.so.1, which exists only inside $ALT_STORE.
+# hello-cache-filtered and fmt-cache-filtered additionally exercise
+# configureSrcFilter's real early-cutoff win (shrinking the configure
+# stage's own `src` input so an edit outside the filtered set never
+# re-runs configure) — this smoke test only covers "does it still
+# build and run correctly", not the caching behavior itself. See
+# tests/configure-cache-cutoff.sh for the automated check of the
+# caching mechanism itself.
 CONFIGCACHE=(
   "hello-cache|bin/hello|%s"
   "zstd-cache|bin/zstd|%s --version"
@@ -119,10 +120,10 @@ CONFIGCACHE=(
   "fmt-cache-filtered|lib/libfmt.so.12.1.0|-"
 )
 
-# dynDrvConfigureCacheStdenv examples (nix/dynDrvConfigureCacheStdenv.nix)
-# — combines DYNDRV's per-TU sandboxed acceleration with CONFIGCACHE's
-# configure-step early-cutoff, splitting into three groups instead of
-# two. Same `nix run`-only rationale as DYNDRV: group C's restored
+# splitAtConfigure+splitAtBuild examples (nix/splitStdenv.nix) —
+# combines DYNDRV's per-TU sandboxed acceleration with CONFIGCACHE's
+# configure-step early-cutoff, splitting into three stages instead of
+# two. Same `nix run`-only rationale as DYNDRV: the final restored
 # tree needs sibling outputs from inside $ALT_STORE.
 DYNCONFIGCACHE=(
   "hello-dyndrv-configure-cached|bin/hello|%s"
@@ -169,7 +170,7 @@ check_example() {
   # Skipped for DYNDRV (direct_exec=0): these wrap an arbitrary
   # upstream nixpkgs package verbatim, so meta.mainProgram is whatever
   # that package's own package.nix set (or didn't) — not something
-  # dynDrvStdenv itself controls. mosh-dyndrv is a real example:
+  # splitStdenv itself controls. mosh-dyndrv is a real example:
   # upstream nixpkgs' mosh package sets no mainProgram at all.
   local is_lib="0"; [[ "$want" == lib/* ]] && is_lib="1"
   local has_mp="0"

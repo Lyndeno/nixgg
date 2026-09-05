@@ -315,7 +315,7 @@ once) are spliced in before the relevant stage is computed, at the
 `splitStdenv { ...; }` call site itself:
 
 ```nix
-{ pkgs, mkNixggBuild, dynDrvStdenv }:
+{ pkgs, mkNixggBuild, splitStdenv }:
 
 let
   genHtml = mkNixggBuild {
@@ -331,8 +331,9 @@ let
   };
 in
 pkgs.zstd.override {
-  stdenv = dynDrvStdenv {
+  stdenv = splitStdenv {
     stdenv = pkgs.stdenv;
+    splitAtBuild = true;
     extraBuildAttrs = finalAttrs: old: old // {
       postPatch = old.postPatch + ''
         substituteInPlace build/cmake/contrib/gen_html/CMakeLists.txt \
@@ -351,10 +352,8 @@ pkgs.zstd.override {
 }
 ```
 
-(`dynDrvStdenv` here is `args: splitStdenv (args // { splitAtBuild = true; })` —
-see [examples/zstd-dyndrv/default.nix](examples/zstd-dyndrv/default.nix)
-for the full, tested version, including how `flake.nix` wires that
-partial application up.) `extraBuildAttrs`'s `old` is the build
+See [examples/zstd-dyndrv/default.nix](examples/zstd-dyndrv/default.nix)
+for the full, tested version. `extraBuildAttrs`'s `old` is the build
 stage's own attrset as `splitStdenv` built it (already carrying the
 real package's `postPatch`, plus its own shim-activation
 `postPatch`/`preBuild`) — not the raw, unmodified `package.nix`
