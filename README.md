@@ -576,74 +576,25 @@ On by default (`NIXGG_RPC=1` in every sandbox mechanism's env block);
 up. `tests/drv-equivalence.sh`'s full sweep (149 drvs) and
 `tests/smoke.sh EXAMPLES=all` both pass with it on.
 
-### Optional: a persistent helper to amortize the daemon handshake
+### Explored and shelved: a persistent connection-pooling helper
 
-Even on the direct-RPC path above, every shim invocation still opens
-its own connection to the real Nix daemon and pays a full handshake —
-measured at **~4.3ms, 99% of a direct RPC call's own cost**, versus
-**~23µs** for an op on a connection that's already open. And it's paid
-*twice* per compile today, since `DerivationAdd`/`StoreAddScan` each
-dial independently.
-
-`mkNixggBuild`'s optional `rpcHelper = true;` starts a small persistent
-process (`nixgg helper`, `go/internal/helper`) once per build, in
-`preBuild`, and every shim relays its three ops through it instead of
-dialing the daemon directly. The helper holds a small *pool* of
-already-handshaken daemon connections — sized to `$NIX_BUILD_CORES` —
-not a single shared one: the Nix worker protocol is strictly
-request/response per connection (confirmed against the real Nix C++
-client, which itself pools connections rather than multiplexing ops
-over one socket), so a lone shared connection would serialize a
-`make -j` build's concurrent shim calls against each other.
-
-```nix
-mkNixggBuild {
-  # ...
-  rpcHelper = true;
-}
-```
-
-Verified end-to-end on both a single-drv build (`.#hello-helper`) and
-a real `make -j$NIX_BUILD_CORES` build with genuine shim-call
-concurrency (mosh, 30 TUs + 6 archives) — byte-identical drv hashes to
-every other path, correct output, clean shutdown.
-
-**Measured, and it doesn't help.** Two whole-build measurements
-(mosh's 30 TUs at ~48.7s→~47.1s, ~3% faster; redis's 175 TUs at
-~64.7s→~65.4s, no difference) looked inconclusive rather than
-negative, so the natural next question was whether TU count mattered.
-It doesn't, but not for the reason initially guessed. Tracing a real
-mosh build phase-by-phase (`nix build -Lv`, timestamped) showed why
-those numbers were too noisy to answer the question at all: of a
-~20-48s wall clock, flake evaluation took ~2s, `configure` (autoconf,
-untouched by RPC/helper either way) took ~13s, and the shim-heavy
-`make -j` pass — the ONLY phase either mechanism can affect — was only
-~4.7s. Everything else in that measurement was Nix's own evaluation
-and configure-script noise, not signal.
-
-Isolating that shim-pass window directly (`dynDrvConfigureCacheStdenv`
-splits configure into its own cached derivation, so a single-file edit
-reruns only the build phase — see `.#mosh-dyndrv-configure-cached` vs
-`.#mosh-dyndrv-configure-cached-helper`) gives a clean ~2.7s window, 8
-runs each way: **~2.74s direct-RPC vs ~2.71s with the helper — ~1%,
-statistically indistinguishable from zero (t-stat 0.61).**
-
-The reason the helper doesn't help: it amortizes the daemon
-handshake (~4.3ms), but Nix's own per-derivation overhead — forking a
-builder, setting up the sandbox, mounting the store — is roughly
-10-20x that per tiny derivation. The direct-RPC path (this section's
-own ~48% win) was large because fork+exec'ing the `nix` CLI cost
-~50-90ms per call, comparable in size to that per-derivation overhead.
-The helper's ~4.3ms is an order of magnitude too small to matter next
-to what's left. Making the helper worthwhile would require cutting
-Nix's own per-derivation cost, not the connection it happens to reuse
-— a different, much larger project than pooling sockets.
-
-Kept as opt-in infrastructure (correctness-verified, harmless, useful
-if per-derivation overhead ever drops enough to expose the handshake
-again) but not recommended, and not worth further investment at
-current scale. See `go/internal/helper`'s own docs for the
-pool/protocol design.
+Even on the direct-RPC path above, every shim invocation opens its own
+connection to the real Nix daemon and pays a full handshake — measured
+at ~4.3ms, 99% of a direct RPC call's own cost. A persistent
+daemon-side helper amortizing that handshake across a whole build
+(`go/internal/helper`, `mkNixggBuild`'s old `rpcHelper` param) was
+built, wired in, and correctness-verified, then measured directly:
+isolating just the shim-heavy build phase from configure/eval noise
+gave ~2.74s direct-RPC vs ~2.71s with the helper — statistically
+indistinguishable from zero (t-stat 0.61). The reason: Nix's own
+per-derivation overhead (forking a builder, sandboxing, mounting the
+store) is roughly 10-20x the ~4.3ms handshake the helper amortizes, so
+there's nothing left to win by reusing the connection. That's also why
+`internal/batch`'s TU-batching (folding N compiles into one derivation
+instead of pooling connections) is the direction that's since paid
+off. Removed rather than kept as dead infrastructure; the measurement
+and design are preserved in git history if per-derivation overhead
+ever drops enough to revisit.
 
 ## Requirements
 

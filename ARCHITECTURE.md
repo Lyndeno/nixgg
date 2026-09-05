@@ -565,9 +565,9 @@ see "What we don't (yet) do", now resolved below).
 
 - **Batching multiple TUs into one derivation** (a different idea
   from the raw-protocol batching dismissed just above) is now real,
-  not a prototype: after measuring that `internal/helper`'s
-  connection pooling doesn't help (see README's "Optional: a
-  persistent helper" section) because Nix's own per-derivation
+  not a prototype: after measuring that a persistent connection-
+  pooling daemon-side helper (since removed — see README's "Explored
+  and shelved" section) doesn't help because Nix's own per-derivation
   overhead — forking a builder, sandboxing, mounting the store — is
   ~10-20x the daemon handshake cost it amortizes, the next lever is
   derivation *count* itself: bundle N TUs into one multi-output

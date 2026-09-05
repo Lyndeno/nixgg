@@ -28,12 +28,6 @@
   gnugrep,
   gnused,
   gawk,
-  # rpcHelper passthrough — see flake.nix's redis-helper entry, which
-  # sets this true to benchmark internal/helper against a build large
-  # enough (175 TUs) to show whether the win scales with TU count the
-  # way mosh's own 30-TU measurement (README.md's "Optional: a
-  # persistent helper" section) predicted it should.
-  rpcHelper ? false,
   # batchGroups passthrough — see flake.nix's redis-batch entry,
   # which sets this to nix/batchGroupPresets.nix's vendorDeps preset
   # to confirm real classification against redis's own deps/ tree —
@@ -53,7 +47,7 @@
 mkNixggBuild {
   pname = "redis";
   version = "8.2.2";
-  inherit src rpcHelper batchGroups;
+  inherit src batchGroups;
   targets = [ { name = "redis-server"; path = "redis-server"; } ];
   # Same set nixpkgs uses, plus grep/sed/awk that redis's release
   # scripts shell out to.

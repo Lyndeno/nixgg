@@ -29,11 +29,6 @@
   openssl,
   zlib,
   abseil-cpp,
-  # rpcHelper passthrough — see flake.nix's mosh-helper entry, which
-  # sets this true to benchmark internal/helper against this same
-  # 30-TU/6-archive fixture (the one drv-equivalence/smoke already use
-  # to correctness-verify the helper's concurrent path).
-  rpcHelper ? false,
   # batchGroups passthrough — see flake.nix's mosh-batch entry, which
   # sets this to cover every one of mosh's 6 lib*.a archives
   # (crypto/network/terminal/util/statesync/protobufs) at once — a
@@ -46,7 +41,7 @@
 mkNixggBuild {
   pname = "mosh";
   version = "unstable";
-  inherit src rpcHelper batchGroups;
+  inherit src batchGroups;
   # Both default to `--enable-client`/`--enable-server` (yes) in
   # configure.ac — no configure flag needed to get both binaries.
   # mkNixggBuild's multi-target `targets` param (see

@@ -422,20 +422,6 @@
             mosh-dyndrv-configure-cached = pkgs.mosh.override {
               stdenv = dynDrvConfigureCacheStdenv { stdenv = pkgs.stdenv; };
             };
-            # Same fixture, rpcHelper = true — configure is cached
-            # (group A, unaffected by rpcHelper) so a rebuild after a
-            # single source edit reruns ONLY group B's shim-heavy
-            # build phase. Meant for benchmarking internal/helper's
-            # own win in isolation from configure/eval overhead, which
-            # dominated an earlier attempt to measure it on plain
-            # .#mosh/.#mosh-helper (see README.md's "Optional: a
-            # persistent helper" section).
-            mosh-dyndrv-configure-cached-helper = pkgs.mosh.override {
-              stdenv = dynDrvConfigureCacheStdenv {
-                stdenv = pkgs.stdenv;
-                rpcHelper = true;
-              };
-            };
             # zstd through the combined mechanism: multi-output
             # (out/bin/dev/man), a real ctest-based checkPhase, and
             # the same gen_html mid-build-exec problem zstd-dyndrv
@@ -525,11 +511,10 @@
           # `nix build .#lua` builds the sandbox version; native
           # equivalence is pinned by tests/drv-equivalence.sh.
 
-          # Shared nativeBuildInputs/src for mosh's/redis's 3 example
-          # variants (plain / -helper / -batch) — each variant only
-          # adds one extra key (rpcHelper or batchGroups), so keep the
-          # dependency list itself as a single source of truth instead
-          # of repeating it three times.
+          # Shared nativeBuildInputs/src for mosh's/redis's plain and
+          # -batch example variants — the -batch variant only adds a
+          # batchGroups key, so keep the dependency list itself as a
+          # single source of truth instead of repeating it twice.
           moshArgs = {
             inherit (pkgs)
               autoconf automake libtool pkg-config perl protobuf which
@@ -547,15 +532,6 @@
             hello = {
               dir = ./dyn-drv/hello-mkbuild.nix;
               args = { inherit (pkgs) lib; };
-            };
-            # Same fixture, rpcHelper = true — exercises
-            # internal/helper's persistent daemon-side relay. See
-            # dyn-drv/hello-mkbuild.nix's own pname/rpcHelper
-            # docstring for why this is a separate attribute rather
-            # than a flag on .#hello itself.
-            hello-helper = {
-              dir = ./dyn-drv/hello-mkbuild.nix;
-              args = { inherit (pkgs) lib; pname = "hello-helper"; rpcHelper = true; };
             };
             lua = {
               dir = ./examples/lua;
@@ -598,17 +574,6 @@
               dir = ./examples/mosh;
               args = moshArgs;
             };
-            # Same fixture, rpcHelper = true — a real multi-TU/
-            # multi-archive build (30 TUs + 6 archives, genuine `make
-            # -j` shim-call concurrency) to benchmark internal/helper's
-            # own win against, not just correctness-verify it (that's
-            # what mosh-dyndrv/tests/smoke.sh already do). See
-            # go/internal/helper's own docs for the pool design this
-            # measures.
-            mosh-helper = {
-              dir = ./examples/mosh;
-              args = moshArgs // { rpcHelper = true; };
-            };
             # Same fixture, batchGroups covering every one of mosh's 6
             # lib*.a archives (crypto/network/terminal/util/
             # statesync/protobufs) at once — mosh-server itself is
@@ -625,15 +590,6 @@
             redis = {
               dir = ./examples/redis;
               args = redisArgs;
-            };
-            # Same fixture, rpcHelper = true — 175 TUs (deps + src),
-            # ~6x mosh's own rpcHelper-benchmark fixture, to check
-            # whether the helper's win scales with TU count the way
-            # its ~4.3ms-handshake rationale predicts. See
-            # examples/redis/default.nix's own comment.
-            redis-helper = {
-              dir = ./examples/redis;
-              args = redisArgs // { rpcHelper = true; };
             };
             # Same fixture, batchGroups = vendorDeps preset — a real
             # multi-directory build confirming internal/batch's

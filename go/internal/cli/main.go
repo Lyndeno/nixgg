@@ -30,8 +30,6 @@ func Main(args []string) error {
 		return cmdEnv(rest)
 	case "assemble":
 		return cmdAssemble(rest)
-	case "helper":
-		return cmdHelper(rest)
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -56,10 +54,6 @@ func usage() {
          calls during a whole-tree build (dynDrvStdenv's phase 1),
          build one drv that restores the tree and resolves every
          stub, and submit it as this derivation's "out" output.
-
-  helper --socket PATH [--remote URL] [--pool-size N]
-         Optional persistent relay for internal/rpc's three sandbox
-         ops (see NIXGG_RPC_HELPER). Not for interactive use.
 
 The usual flow doesn't call nixgg at all after env:
 

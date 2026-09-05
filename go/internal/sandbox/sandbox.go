@@ -19,7 +19,6 @@ import (
 	"github.com/tbereknyei/nixgg/internal/aterm"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/expr"
-	"github.com/tbereknyei/nixgg/internal/helper"
 	"github.com/tbereknyei/nixgg/internal/nar"
 	"github.com/tbereknyei/nixgg/internal/rpc"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
@@ -43,18 +42,6 @@ func rpcEnabled() bool {
 	return os.Getenv("NIXGG_RPC") == "1"
 }
 
-// helperSocket returns the helper's socket path if NIXGG_RPC_HELPER
-// is set, or "" if not. A third, independently opt-in layer on top of
-// NIXGG_RPC: when set, every op relays through the helper (which
-// holds a pool of already-handshaken daemon connections — see
-// internal/helper's own docs) instead of each shim invocation
-// dialing the daemon directly. Checked before rpcEnabled() at each
-// call site so a helper implies the RPC path is wanted without also
-// requiring NIXGG_RPC=1 to be set redundantly.
-func helperSocket() string {
-	return os.Getenv("NIXGG_RPC_HELPER")
-}
-
 // dialRPC connects to the daemon socket the sandbox already exposes
 // via NIX_REMOTE (unix://<path> — see internal/rpc.Dial's own
 // docstring for why this is always the sandbox's own .nix-socket,
@@ -67,48 +54,24 @@ func dialRPC() (*rpc.Conn, error) {
 	return rpc.Dial(remote)
 }
 
-// rpcBackend is satisfied by both *rpc.Conn (NIXGG_RPC=1, a fresh dial
-// per call) and helperBackend (NIXGG_RPC_HELPER=<socket>, relayed
-// through the pooled daemon-side helper) — the two ways nixgg speaks
-// the raw worker protocol instead of fork+exec'ing the nix CLI.
-// Letting DerivationAdd/StoreAddScan/SubmitOutput each pick one via
-// selectBackend collapses what used to be three near-identical
-// helper/rpc/CLI branches per function into one selection plus one
-// CLI fallback.
+// rpcBackend is satisfied by *rpc.Conn (NIXGG_RPC=1, a fresh dial per
+// call) — the raw worker-protocol path nixgg speaks instead of
+// fork+exec'ing the nix CLI. Letting DerivationAdd/StoreAddScan/
+// SubmitOutput each pick it via selectBackend collapses what used to
+// be near-identical rpc/CLI branches per function into one selection
+// plus one CLI fallback.
 type rpcBackend interface {
 	AddDerivation(name string, contents []byte, refs []string) (string, error)
 	AddToStoreScanning(name string, narDump []byte) (string, error)
 	SubmitOutput(drvPath, output string) error
 }
 
-// helperBackend adapts internal/helper's package-level client
-// functions (each a one-shot dial to the helper's socket) to
-// rpcBackend.
-type helperBackend string // socket path
-
-func (h helperBackend) AddDerivation(name string, contents []byte, refs []string) (string, error) {
-	return helper.AddDerivation(string(h), name, contents, refs)
-}
-
-func (h helperBackend) AddToStoreScanning(name string, narDump []byte) (string, error) {
-	return helper.AddToStoreScanning(string(h), name, narDump)
-}
-
-func (h helperBackend) SubmitOutput(drvPath, output string) error {
-	return helper.SubmitOutput(string(h), drvPath, output)
-}
-
-// selectBackend picks which raw-protocol path a call should use, if
-// any. Helper is checked before direct dial — a helper socket implies
-// the RPC path is wanted without also requiring NIXGG_RPC=1 to be set
-// redundantly (see helperSocket's own docstring). ok=false (with a nil
-// error) means neither is enabled and the caller should fall back to
-// the CLI; the returned close func is always non-nil when ok is true
-// and must be called once the backend is no longer needed.
+// selectBackend picks whether a call should use the direct-RPC path.
+// ok=false (with a nil error) means RPC isn't enabled and the caller
+// should fall back to the CLI; the returned close func is always
+// non-nil when ok is true and must be called once the backend is no
+// longer needed.
 func selectBackend() (b rpcBackend, close func(), ok bool, err error) {
-	if sock := helperSocket(); sock != "" {
-		return helperBackend(sock), func() {}, true, nil
-	}
 	if rpcEnabled() {
 		conn, err := dialRPC()
 		if err != nil {
@@ -133,13 +96,6 @@ func selectBackend() (b rpcBackend, close func(), ok bool, err error) {
 // archive/link and once total for submit-output), so this is where
 // ARCHITECTURE.md's "What we don't (yet) do" fork+exec-tax measurement
 // (~44-90ms/call) actually adds up across a many-TU build.
-//
-// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
-// instead of dialing the daemon directly — amortizes the daemon's own
-// handshake (measured ~4.3ms, 99% of the direct-RPC per-call cost)
-// across every shim invocation in the build via a pooled connection,
-// rather than paying it once per call. Checked before NIXGG_RPC so a
-// helper socket doesn't also require NIXGG_RPC=1 to be set.
 func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 	name := drv.Name + ".drv"
 	if b, closeB, ok, err := selectBackend(); err != nil {
@@ -185,9 +141,6 @@ func DerivationAdd(cfg *toolchain.Config, drv expr.JSONDrv) (string, error) {
 // instead of fork+exec'ing `nix store add --scan` — the second-
 // highest-volume of the three sandbox ops (one call per compile TU,
 // same as DerivationAdd).
-//
-// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
-// instead — see DerivationAdd's own docstring for why.
 func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 	if b, closeB, ok, err := selectBackend(); err != nil {
 		return "", fmt.Errorf("rpc store add --scan: %w", err)
@@ -237,9 +190,6 @@ func StoreAddScan(cfg *toolchain.Config, name, path string) (string, error) {
 // own daemon socket instead of fork+exec'ing `nix store
 // submit-output` — see internal/rpc's own docs for the wire protocol
 // this replicates (WorkerProto::Op::SubmitOutput, opcode 1000).
-//
-// Under NIXGG_RPC_HELPER=<socket>, relays through internal/helper
-// instead — see DerivationAdd's own docstring for why.
 func SubmitOutput(cfg *toolchain.Config, drvPath, outputName string) error {
 	if b, closeB, ok, err := selectBackend(); err != nil {
 		return fmt.Errorf("rpc submit-output: %w", err)
