@@ -46,7 +46,9 @@ build command is rendered once, in Go, and sandbox mode bakes it into
 a JSON drv while native mode passes the same text through a thunk for
 `nix/resolve-script.nix` to fill in the few values only Nix knows at
 eval time. `nix build .#lua` gets an instant cache hit from an earlier
-native build in an extracted lua source tree, and vice versa.
+native build in an extracted lua source tree, and vice versa — see
+ARCHITECTURE.md's "Corollary: dev-shell and pure-build derivations are
+interchangeable" for the mechanism and a directly-measured example.
 
 Several tests, covering different failure modes:
 

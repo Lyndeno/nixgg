@@ -47,6 +47,61 @@ cases the compile shim realises synchronously via a per-invocation
 `nix build --file`. `mode.For(path)` decides — no env var involved,
 purely filename-driven.
 
+### Corollary: dev-shell and pure-build derivations are interchangeable
+
+Because native and sandbox modes are required to produce bit-identical
+`.drv`s for the same logical compile/link/archive (see "What every CA
+hash includes" below), a derivation realised ONE way is a valid
+substitute for the SAME derivation realised the OTHER way. Concretely:
+a translation unit compiled by hand inside `nix develop .#foo-shell`
+(typing `make` yourself, iterating, no sandbox involved at all) lands
+at the exact same store path a fully sandboxed `nix build .#foo` would
+compute for that TU — so the pure build sees it as already-realised
+and skips rebuilding it, with no cache-priming step, no flag, and no
+awareness on either side that the other mode ever touched that path.
+It also runs in reverse: a TU built once via `nix build` is an instant
+substitute the next time you `nix develop` and rebuild by hand.
+
+Verified directly, not just inferred from the invariant: in a fresh
+alt store, `nix develop .#lua-shell` + `make CC=cc MYCFLAGS=-DLUA_USE_LINUX
+lapi.o lauxlib.o` (exactly 2 of lua's 32 TUs, real flags, no sandbox)
+followed immediately by a full `nix build .#lua` from the same store —
+the sandboxed build's own build log lists exactly 30 `tu-*.o.drv`
+compiles, not 32; `lapi`/`lauxlib` are silently absent because their
+sandbox-mode drv hashes already matched what native mode had just
+produced, so Nix substituted them instead of rebuilding. First
+measured this way in `0d5d6f4` ("sandbox drvs are now byte-identical
+to native drvs" — md5-verified per-drv, both directions, before this
+project had any dedicated equivalence test).
+
+**Why this holds, mechanically**: `nix/mkNixggBuild.nix`'s
+`toolchainEnv`/`toolchainEnvShellHook` and `scrubWrapperEnv` are each a
+single Nix string, computed once at eval time and threaded unmodified
+into both the sandbox derivation's attrs (`preBuild`, env vars) and
+the generated dev shell's `shellHook` — never two independently
+authored env blocks that happen to agree. Any divergence between them
+shows up immediately as a drv-hash mismatch, which is exactly what
+`tests/drv-equivalence.sh` polices (149 drvs, 5 fixtures, every native
+thunk's `drvPath` compared byte-for-byte against sandbox mode's
+registered drv). This is Nix's ordinary content-addressed
+store-path-equality doing the work — no extra opt-in beyond what
+sandbox mode needs anyway (`ca-derivations`, `dynamic-derivations`),
+and it composes with a build-trace substituter/remote cache the same
+way any other CA derivation would.
+
+**Why this matters enough to protect deliberately**: it means the
+edit/compile/test loop a developer runs by hand inside a shell and the
+"clean" CI/release build going through the sandboxed dyn-drv path are
+not two separate caches that happen to coexist — they are the SAME
+cache, keyed by the SAME content-addressed hash. Nothing needs to be
+"promoted" or "synced" from one to the other. Any future change that
+adds a native-only or sandbox-only input to a derivation's hash (an
+env var, a flag, a path shape) silently forfeits this property for
+whatever it touches — treat "does this still round-trip through
+`tests/drv-equivalence.sh`" as the standing check for every change to
+the shared env-construction code (`mkNixggBuild.nix`'s `toolchainEnv`/
+`scrubWrapperEnv`, `nix/dynDrvShared.nix`), not just a release gate.
+
 ## User-facing entry points
 
 ```bash
@@ -488,7 +543,9 @@ see "What we don't (yet) do", now resolved below).
   inner drv matches byte-for-byte between native and sandbox mode
   across all five fixtures — 149 drvs total (hello 3 · lua 37 · fmt 3
   · mosh 38 · gcc 68). Both modes share the same `Derivation` struct and
-  `preBuild` scrubbing, so drift is caught immediately.
+  `preBuild` scrubbing, so drift is caught immediately. This is what
+  makes dev-shell and pure-build derivations interchangeable — see
+  "The invariant" above.
 
 ## What we don't (yet) do
 
