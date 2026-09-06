@@ -67,6 +67,7 @@ SLOW=(
   "redis|bin/redis-server|%s --version"
   "ffmpeg|bin/ffmpeg_g|%s -version"
   "llvm|bin/llc|%s --version"
+  "postgresql|bin/postgres|%s --version"
 )
 
 # splitAtBuild-only examples (nix/splitStdenv.nix) — an existing

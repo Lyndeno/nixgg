@@ -234,6 +234,19 @@
         "type": "github"
       }
     },
+    "postgresql-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1731961932,
+        "narHash": "sha256-P7IwvMcOI6vW14PiB2R0NEzAEPeaKg0zaUKTw2GJ5DA=",
+        "type": "tarball",
+        "url": "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.gz"
+      }
+    },
     "redis-src": {
       "flake": false,
       "locked": {
@@ -261,6 +274,7 @@
         "mosh-src": "mosh-src",
         "nix-15793": "nix-15793",
         "nixpkgs": "nixpkgs_2",
+        "postgresql-src": "postgresql-src",
         "redis-src": "redis-src"
       }
     }

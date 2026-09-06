@@ -85,10 +85,28 @@
     url = "github:llvm/llvm-project/llvmorg-19.1.7";
     flake = false;
   };
+  inputs.postgresql-src = {
+    # PostgreSQL 17.2 — a much larger real-world autoconf project than
+    # mosh/redis (src/backend alone is ~1000+ TUs). We only build
+    # src/backend (the postgres server binary itself), not `make
+    # world`/docs/contrib — same "deliberately smaller target" scoping
+    # as examples/gcc's libiberty-only build. Confirmed directly: a
+    # sequential (non -j) `make -C src/backend` builds cleanly and
+    # produces a real, runnable `postgres --version`; `-j` on this
+    # SAME subdir-only invocation hits a real recursive-make ordering
+    # race in PostgreSQL's own Makefile.global (submake-generated-headers
+    # isn't a dependency of every parallel sub-target the way a
+    # top-level `make -j` run would see it) — "No rule to make target
+    # '../../src/common/libpgcommon_srv.a'" — unrelated to nixgg;
+    # sidestepped by running `make -C src/backend generated-headers`
+    # first, then the real (still non -j, for the same reason) build.
+    url = "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.gz";
+    flake = false;
+  };
 
   outputs =
     { self, nixpkgs, nix-15793, lua-src, fmt-src, mosh-src, redis-src, ffmpeg-src,
-      gcc-src, llvm-src }:
+      gcc-src, llvm-src, postgresql-src }:
     let
       forEachSystem = f: builtins.mapAttrs (system: pkgs: f system pkgs) nixpkgs.legacyPackages;
     in
@@ -745,6 +763,18 @@
                 src = gcc-src;
                 batchGroups = [ { name = "gcc"; patterns = [ "libiberty/*.c" ]; } ];
               };
+            };
+            # PostgreSQL's own src/backend — the real postgres server
+            # binary, ~1000+ TUs, built via its standalone
+            # ./configure && make -C src/backend. See
+            # examples/postgresql's own docstring for the deliberate
+            # scope-down (no `make world`, no docs/contrib/libpq) and
+            # why this fixture never uses `make -j` (a real,
+            # nixgg-unrelated recursive-make ordering race in
+            # PostgreSQL's own Makefile.global).
+            postgresql = {
+              dir = ./examples/postgresql;
+              args = { inherit (pkgs) bison flex perl; src = postgresql-src; };
             };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the
