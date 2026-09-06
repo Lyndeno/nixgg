@@ -125,7 +125,17 @@ func copyRecursive(src, dst string) error {
 		}
 		return os.Symlink(target, dst)
 	case info.IsDir():
-		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+		// Owner-writable regardless of src's own mode: src may be an
+		// untouched subtree still carrying its Nix-store read-only
+		// bits (e.g. an unmodified cmake/ dir under a build's source
+		// tree), and MkdirAll below would otherwise create dst with
+		// that same read-only mode — then the recursive copyRecursive
+		// calls a few lines down can't create any entries inside it.
+		// dst is disposable scratch space consumed only by `nix store
+		// add --scan`, which assigns its own final store permissions,
+		// so the exact mode copied here doesn't matter beyond letting
+		// this function populate it.
+		if err := os.MkdirAll(dst, info.Mode().Perm()|0o200); err != nil {
 			return err
 		}
 		entries, err := os.ReadDir(src)

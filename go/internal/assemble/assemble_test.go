@@ -122,6 +122,41 @@ func TestStageForScanPreservesSymlinks(t *testing.T) {
 	}
 }
 
+func TestStageForScanCopiesReadOnlySourceDirs(t *testing.T) {
+	// The regression this pins: an untouched subtree of the build
+	// tree (e.g. LLVM's cmake/ dir, never written to during the
+	// build) still carries its Nix-store read-only permission bits
+	// (dr-xr-xr-x) at scan time. copyRecursive used to create dst
+	// with that same read-only mode via MkdirAll(dst,
+	// info.Mode().Perm()), so its own subsequent recursive calls
+	// populating dst's children failed with "permission denied" —
+	// confirmed directly building llvm-dyndrv (4013/4013 TUs
+	// compiled, then failed at this exact step). dst is disposable
+	// scratch space consumed only by `nix store add --scan`, so the
+	// exact mode doesn't matter as long as this function can write
+	// into it.
+	root := t.TempDir()
+	roDir := filepath.Join(root, "cmake")
+	if err := os.MkdirAll(roDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roDir, "config.cmake"), []byte("x"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(roDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(roDir, 0o755) })
+
+	staged, err := StageForScan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(staged, "cmake", "config.cmake")); err != nil {
+		t.Errorf("cmake/config.cmake should be staged: %v", err)
+	}
+}
+
 func TestStageForScanIsSelfExcluding(t *testing.T) {
 	// The regression this pins: StageForScan used to accept a
 	// caller-supplied dest, which — inside a real builder-rpc-v0
