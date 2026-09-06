@@ -86,6 +86,16 @@ close a fourth gap — configure-time early cutoff (an excluded-file edit
 should be a cache hit; an included-file edit should invalidate) — in
 native mode and dyn-drv mode respectively.
 
+A fifth gap: drv-equivalence.sh proves the two modes' drv hashes
+*match*, but never builds through both in the same store, so it can't
+prove a drv one mode built is actually *substituted for* by the other
+— as opposed to merely being irrelevant because the hashes silently
+diverged. [tests/cross-mode-reuse.sh](tests/cross-mode-reuse.sh)
+closes it: hand-compile a couple of TUs via `nix develop .#lua-shell`,
+then assert a full `nix build .#lua` reuses them instead of
+recompiling, and that the sandbox build's own drv graph references
+the exact paths native mode built.
+
 ### Invoking sandbox mode explicitly
 
 `nix develop`'s shellHook already prepends the patched Nix to `PATH`

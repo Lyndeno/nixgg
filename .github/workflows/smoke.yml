@@ -83,6 +83,19 @@ jobs:
       - name: Run per-TU rebuild-scope test
         run: PATCHED_NIX="$PWD/.patched-nix" bash tests/perf-regression.sh
 
+      # tests/drv-equivalence.sh proves native and sandbox mode
+      # produce the SAME set of drv hashes; it never builds through
+      # BOTH modes in the same store, so it can't prove a drv built by
+      # hand in `nix develop` is actually substituted for (not just
+      # structurally equal to) the same drv in a later sandboxed `nix
+      # build` — the property ARCHITECTURE.md's "Corollary: dev-shell
+      # and pure-build derivations are interchangeable" names as worth
+      # protecting deliberately. This hand-compiles 2 of lua's TUs via
+      # `nix develop .#lua-shell`, then asserts a full `nix build
+      # .#lua` reuses them instead of recompiling.
+      - name: Run cross-mode reuse test
+        run: PATCHED_NIX="$PWD/.patched-nix" bash tests/cross-mode-reuse.sh
+
   drv-equivalence:
     runs-on: ubuntu-latest
     # ONLY=hello is ~35s of build time; generous headroom for a

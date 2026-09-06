@@ -72,7 +72,13 @@ sandbox-mode drv hashes already matched what native mode had just
 produced, so Nix substituted them instead of rebuilding. First
 measured this way in `0d5d6f4` ("sandbox drvs are now byte-identical
 to native drvs" — md5-verified per-drv, both directions, before this
-project had any dedicated equivalence test).
+project had any dedicated equivalence test); now an automated,
+CI-gated regression test:
+[tests/cross-mode-reuse.sh](tests/cross-mode-reuse.sh) runs this
+exact scenario and additionally confirms the sandbox build's own drv
+graph references the native-built paths (not just their absence from
+the build log, which a drv-hash MISMATCH would also produce, for the
+opposite reason).
 
 **Why this holds, mechanically**: `nix/mkNixggBuild.nix`'s
 `toolchainEnv`/`toolchainEnvShellHook` and `scrubWrapperEnv` are each a
