@@ -3,12 +3,14 @@
 # batch-archive derivations for the same source, and the batch
 # mechanism's own fallback path is exercised, not just its happy path.
 #
-# tests/drv-equivalence.sh's own filter
-# (^[a-z0-9]+-(tu-|ar-|bin-)) is BLIND to "batch-"-prefixed drvs by
-# construction (see go/internal/expr/batcharchive.go's own package
-# docstring) — this script is that shape's own, separate check,
-# mirroring drv-equivalence.sh's methodology exactly but filtering on
-# "batch-" instead. Shared alt-store/patched-nix scaffolding,
+# This script is that shape's own, separate check, mirroring
+# drv-equivalence.sh's methodology exactly but filtering the sandbox
+# side's exact drv set (from equiv_sandbox_drvs — see its own
+# docstring in tests/lib/drv-equiv-common.sh for the mechanism) down
+# to "batch-"-prefixed drvs only, since drv-equivalence.sh's own
+# fixtures never produce that shape at all (see
+# go/internal/expr/batcharchive.go's own package docstring). Shared
+# alt-store/patched-nix scaffolding, sandbox-drv collection,
 # native-src resolution, the native build invocation, and the
 # match/mismatch reporting live in tests/lib/drv-equiv-common.sh.
 #
@@ -43,9 +45,9 @@ source "$(cd "$(dirname "$0")" && pwd)/lib/drv-equiv-common.sh"
 equiv_common_setup "/tmp/nixgg-batch-equiv-store"
 
 # run_fixture: same structure as drv-equivalence.sh's own
-# run_fixture, filtering on "batch-" instead of "tu-|ar-|bin-", plus
-# the extra functional check (member list + byte-diff) neither script
-# needed before this Kind existed.
+# run_fixture, filtering equiv_sandbox_drvs's output down to "batch-"
+# instead of taking it all, plus the extra functional check (member
+# list + byte-diff) neither script needed before this Kind existed.
 run_fixture() {
   local attr="$1" src_input="$2" subdir="$3"
   local label="$attr"
@@ -53,39 +55,16 @@ run_fixture() {
   echo
   printf '\033[1;36m===== %s =====\033[0m\n' "$label"
 
-  local pre_snap; pre_snap=$(ls "$ALT_STORE"/nix/store/ 2>/dev/null | sort)
+  printf '==> sandbox: nix build .#%s (wrapper only) + derivation show -r\n' "$attr"
+  local all_sb_drvs
+  all_sb_drvs=$(equiv_sandbox_drvs "$attr") || return 1
 
-  local sb_log="/tmp/nixgg-batch-equiv-$attr-sandbox.log"
-  printf '==> sandbox: nix build .#%s\n' "$attr"
-  "$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link \
-    --print-out-paths "$nixgg_root#$attr" \
-    > "$sb_log" 2>&1 || {
-      echo "sandbox build failed; see $sb_log:" >&2
-      tail -20 "$sb_log" >&2
-      return 1
-    }
-
-  local post_snap; post_snap=$(ls "$ALT_STORE"/nix/store/ 2>/dev/null | sort)
-  local new_paths; new_paths=$(comm -13 <(echo "$pre_snap") <(echo "$post_snap"))
-
-  # Only batch-*.drv — same resolved-vs-unresolved concern
-  # drv-equivalence.sh's own comment documents for bin-/ar- applies
-  # here too (Nix rewrites the outer .drv.drv's inner drvs from
-  # inputDrvs-form to inputSrcs-form on build); a batch-archive drv
-  # always references at least the toolchain via inputs.srcs and
-  # NEVER references another drv in inputs.drvs at all (see
-  # BatchArchiveJSON's own docstring — no sibling drv/thunk inputs by
-  # construction), so unlike bin-/ar-, there is no resolved-rewrite
-  # variant to filter out here: this Kind's own drv never had a
-  # nonempty inputDrvs to begin with.
+  # Only batch-*.drv — equiv_sandbox_drvs already returns the exact,
+  # complete drv set for this build (see its own docstring); this
+  # script narrows that down to just the batch-archive Kind, since
+  # it wants a SUBSET, not everything.
   local sb_drvs
-  sb_drvs=$(for base in $new_paths; do
-    local f="$ALT_STORE/nix/store/$base"
-    [[ ! -f "$f" ]] && continue
-    [[ "$base" == *.drv.drv ]] && continue
-    [[ ! "$base" =~ ^[a-z0-9]+-batch- ]] && continue
-    echo "$base"
-  done | sort -u)
+  sb_drvs=$(printf '%s\n' "$all_sb_drvs" | grep -E '^[a-z0-9]+-batch-' || true)
 
   local workdir="$(mktemp -d)"
   local src

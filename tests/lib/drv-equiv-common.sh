@@ -101,6 +101,113 @@ print(json.dumps(json.dumps(d['nodes']['$src_input']['locked'])))
   echo "$ALT_STORE$src"
 }
 
+# equiv_sandbox_drvs <attr>
+#
+# Echoes the basename of every TU/link/archive drv a sandbox build of
+# `.#<attr>` produces — the exact set, with zero filename filtering.
+#
+# Mechanism (confirmed directly, not inferred): mkNixggBuild.nix's
+# outer wrapper derivation (`drv`, `outputHashMode = "text"`) is what
+# actually runs the shims — each shimmed cc/ar/link call REGISTERS a
+# drv (`nix derivation add`) rather than compiling anything for real,
+# so building ONLY the wrapper's own per-target outputs (never the
+# outputOf-resolved `results`/`packages`) triggers every registration
+# with no real compilation, and each output's build result IS the
+# resolved target drv's own store path (`nix build ... --print-out-
+# paths` on `.#<attr>.drv."<output>.drv"`). Feeding every one of
+# those printed paths into ONE `nix derivation show -r` call then
+# returns the complete, already-deduplicated set of every TU/link/
+# archive drv this build produced — confirmed on lua (two outputs,
+# lua+luac, sharing one archive drv): 37 total entries, `ar-
+# liblua.a.drv` appearing exactly once despite being a dependency of
+# both, matching README.md's pinned count exactly.
+#
+# This replaces the previous store-snapshot-diff + filename-regex
+# approach (snapshot nix/store/ before and after a full `nix build`,
+# diff the listings, then guess which new files were real target
+# drvs vs toolchain noise via `^[a-z0-9]+-(tu-|ar-|bin-|nixgg-)` plus
+# several more lines excluding the outer wrapper itself, nixgg's own
+# toolchain-build drvs, and Nix's post-build inputDrvs-to-inputSrcs
+# rewrite). None of that filtering is needed here: toolchain deps
+# (bash/coreutils/gcc-wrapper) are referenced via inputs.srcs, never
+# inputs.drvs, so `derivation show -r` has nothing to recurse into
+# for them — the JSON keys already ARE exactly the real drv set.
+#
+# Output-key discovery is generic (`nix eval --json
+# "<flake>#<attr>.drv.outputs"`), so this works unchanged for both
+# single-target (hello -> ["hello.drv"]) and multi-target (lua ->
+# ["lua.drv","luac.drv"]) fixtures with no per-fixture target list to
+# maintain.
+#
+# Requires $nixgg_root, $PATCHED_NIX in scope (from
+# equiv_common_setup). Logs failures to /tmp/nixgg-equiv-<attr>-
+# sandbox.log; on failure, tails it to stderr and returns 1.
+equiv_sandbox_drvs() {
+  local attr="$1"
+  local log="/tmp/nixgg-equiv-$attr-sandbox.log"
+
+  local outputs_json
+  outputs_json=$("$PATCHED_NIX/bin/nix" eval --json "$nixgg_root#$attr.drv.outputs" 2>"$log") || {
+    echo "could not read $attr.drv.outputs; see $log:" >&2
+    tail -20 "$log" >&2
+    return 1
+  }
+
+  local -a keys=()
+  while IFS= read -r k; do
+    [[ -n "$k" ]] && keys+=("$k")
+  done < <(python3 -c "
+import json, sys
+for k in json.loads(sys.stdin.read()):
+    print(k)
+" <<<"$outputs_json")
+
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    echo "$attr.drv.outputs is empty" >&2
+    return 1
+  fi
+
+  # One nix build invocation for every output — confirmed this shares
+  # ONE build phase for the whole multi-output derivation rather than
+  # re-running buildCommand per output.
+  local -a attrs=()
+  for k in "${keys[@]}"; do
+    attrs+=("$nixgg_root#$attr.drv.\"$k\"")
+  done
+
+  local out_paths
+  out_paths=$("$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link \
+    --print-out-paths "${attrs[@]}" 2>"$log") || {
+    echo "sandbox build failed; see $log:" >&2
+    tail -20 "$log" >&2
+    return 1
+  }
+
+  local -a target_paths=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && target_paths+=("$p")
+  done <<<"$out_paths"
+
+  if [[ ${#target_paths[@]} -eq 0 ]]; then
+    echo "$attr's outer wrapper produced no output paths" >&2
+    return 1
+  fi
+
+  local show_json
+  show_json=$("$PATCHED_NIX/bin/nix" derivation show -r "${target_paths[@]}" 2>"$log") || {
+    echo "nix derivation show -r failed for $attr; see $log:" >&2
+    tail -20 "$log" >&2
+    return 1
+  }
+
+  python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+for k in sorted(d['derivations'].keys()):
+    print(k)
+" <<<"$show_json"
+}
+
 # equiv_native_build <attr> <subdir> <workdir> <log-file>
 #
 # Copies the already-resolved native src (expected at $src, set by

@@ -4,7 +4,12 @@
 #
 # Runs each fixture two ways:
 #
-#   sandbox:  `nix build .#<attr>`     — JSON drv → nix derivation add
+#   sandbox:  build the outer wrapper's own per-target outputs only
+#             (never the outputOf-resolved result), which registers
+#             every drv but compiles nothing for real, then `nix
+#             derivation show -r` on the resolved target paths for
+#             the exact drv set — see equiv_sandbox_drvs's own
+#             docstring for why this needs no filename filtering.
 #   native:   fetch same source, unpack into a tempdir, `nix develop`
 #             and run the same buildCommand there. Shims write .nix
 #             thunks; nix-instantiate on each thunk → drv path.
@@ -13,12 +18,12 @@
 # on every drv-hash, the mode-independent Derivation representation
 # is doing its job.
 #
-# Shared alt-store/patched-nix scaffolding, native-src resolution, the
-# native build invocation, and the match/mismatch reporting live in
-# tests/lib/drv-equiv-common.sh (shared with
-# tests/batch-drv-equivalence.sh, which proves the same invariant for
-# the batch-archive Kind). Only the sandbox-side drv-name filter and
-# the fixture list are this script's own.
+# Shared alt-store/patched-nix scaffolding, sandbox-drv collection,
+# native-src resolution, the native build invocation, and the
+# match/mismatch reporting live in tests/lib/drv-equiv-common.sh
+# (shared with tests/batch-drv-equivalence.sh and tests/thin-archive-
+# equivalence.sh, which prove the same invariant for other Kinds).
+# Only the fixture list is this script's own.
 #
 # Env knobs:
 #   ALT_STORE      root of the alt store (default /tmp/nixgg-equiv-store)
@@ -57,90 +62,10 @@ run_fixture() {
   echo
   printf '\033[1;36m===== %s =====\033[0m\n' "$label"
 
-  # -- 1. sandbox build --
-  # Snapshot the store *before* this fixture so we can compute
-  # newly-added drvs afterward. Running multiple fixtures against
-  # a single alt store (--keep-store, or just fixture-i then
-  # fixture-i+1) would otherwise pollute the set.
-  local pre_snap; pre_snap=$(ls "$ALT_STORE"/nix/store/ 2>/dev/null | sort)
-
-  local sb_log="/tmp/nixgg-equiv-$attr-sandbox.log"
-  printf '==> sandbox: nix build .#%s\n' "$attr"
-  "$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link \
-    --print-out-paths "$nixgg_root#$attr" \
-    > "$sb_log" 2>&1 || {
-      echo "sandbox build failed; see $sb_log:" >&2
-      tail -20 "$sb_log" >&2
-      return 1
-    }
-
-  # Set of drv hashes the sandbox produced. Filter:
-  #   - tu-*.o.drv (unchanged naming) + a target's own link/archive
-  #     drv. The latter's naming changed once mkNixggBuild gained
-  #     multi-target support: every mkNixggBuild-based build now
-  #     names its OWN target drvs "<outerBuildName>-<targetKey>" (no
-  #     "bin-"/"ar-" prefix at all — see
-  #     go/internal/shim/storeinput.go's multiTargetName docstring
-  #     for why), while splitStdenv's build stage (which never sets
-  #     NIXGG_SANDBOX_TARGET to the JSON-map shape) still
-  #     produce the OLD "bin-<outName>"/"ar-<outName>" names for their
-  #     own per-TU link/archive drvs. Both shapes are real and need
-  #     to match here — "^[a-z0-9]+-nixgg-" catches the former,
-  #     "^[a-z0-9]+-(bin-|ar-)" the latter.
-  #
-  #     "^[a-z0-9]+-nixgg-" ALSO matches things that aren't a target
-  #     drv at all: the outer text-hash wrapper itself (name is bare
-  #     "nixgg-<pname>", no per-target suffix) and, coincidentally,
-  #     nixgg's own toolchain build drvs (name is literally "nixgg" —
-  #     the nixgg-nix helper package, the nixgg-bin build). Both are
-  #     excluded below by outputHashMode: a real target drv is always
-  #     "nar" (see linker.nix/archiver.nix/LinkJSON/ArchiveJSON — none
-  #     of them ever use "text"); the outer wrapper is always "text"
-  #     (mkNixggBuild.nix's own dyn-drv marker); the toolchain drvs
-  #     have no outputHashMode key at all (ordinary input-addressed
-  #     derivations, not CA).
-  #   - drop the outer .drv.drv wrapper (text-mode drv-producing)
-  #   - drop RESOLVED variants: when Nix builds the outer .drv.drv,
-  #     it rewrites each inner drv from inputDrvs-form (references
-  #     other drvs by path) into inputSrcs-form (references the
-  #     resolved store outputs). The former is what our shim
-  #     emitted; the latter is Nix's rewrite. Native mode never
-  #     produces the rewritten variant, so exclude it here for a
-  #     like-for-like set comparison. Heuristic: the unresolved
-  #     form has *some* .drv path in the aterm's inputDrvs slot
-  #     (position 2, `[(…drv…)]`). The resolved form has `[]`
-  #     there.
-  local post_snap; post_snap=$(ls "$ALT_STORE"/nix/store/ 2>/dev/null | sort)
-  local new_paths; new_paths=$(comm -13 <(echo "$pre_snap") <(echo "$post_snap"))
-
+  # -- 1. sandbox drvs --
+  printf '==> sandbox: nix build .#%s (wrapper only) + derivation show -r\n' "$attr"
   local sb_drvs
-  sb_drvs=$(for base in $new_paths; do
-    local f="$ALT_STORE/nix/store/$base"
-    [[ ! -f "$f" ]] && continue
-    [[ "$base" == *.drv.drv ]] && continue
-    [[ ! "$base" =~ ^[a-z0-9]+-(tu-|ar-|bin-|nixgg-) ]] && continue
-    if [[ "$base" =~ ^[a-z0-9]+-nixgg- ]]; then
-      # Real target drv only if outputHashMode is "nar" — excludes
-      # the outer text-hash wrapper and nixgg's own toolchain drvs
-      # (see the comment above).
-      grep -q '"outputHashMode","nar"' "$f" 2>/dev/null || continue
-    fi
-    # Peek the aterm. A target's own link/archive drv (either naming
-    # shape) typically references at least one .drv in inputDrvs.
-    # tu-*.o.drv (compile) usually has an empty inputDrvs and non-
-    # empty inputSrcs (the staged src + toolchain), so we can't
-    # reject "empty inputDrvs" outright — instead, only drop resolved
-    # target-drv variants by name pattern (they always appear
-    # alongside the unresolved form).
-    if [[ "$base" =~ ^[a-z0-9]+-bin- || "$base" =~ ^[a-z0-9]+-ar- || "$base" =~ ^[a-z0-9]+-nixgg- ]]; then
-      # Target-drv shims emit references into inputDrvs. If this drv
-      # has zero .drv refs in position 2, it's the resolved rewrite.
-      if ! head -c 500 "$f" | grep -q '\[("/nix/store/[^"]*\.drv"'; then
-        continue
-      fi
-    fi
-    echo "$base"
-  done | sort -u)
+  sb_drvs=$(equiv_sandbox_drvs "$attr") || return 1
 
   # -- 2. native build --
   local workdir="$(mktemp -d)"
