@@ -59,8 +59,28 @@ sb_out=$("$PATCHED_NIX/bin/nix" build --no-eval-cache --no-link \
   }
 
 # -- 3. functional check: the sandbox binary actually runs --
+#
+# The binary's own content (its ELF interpreter reference, glibc
+# rpath, etc) always names the CANONICAL /nix/store/... path — the
+# alt store's `local?root=$ALT_STORE` prefix only changes where NIX
+# itself keeps things, not what path strings get baked into a build's
+# output. execve() resolves those embedded paths against the real
+# filesystem root, so exec'ing straight out of
+# "$ALT_STORE/nix/store/..." only works by coincidence (the real
+# /nix/store happens to already have the same paths cached from
+# unrelated Nix usage) — confirmed as a real, non-coincidental CI
+# failure ("cannot execute: required file not found") the first time
+# this ran on a fresh runner with no such cache. `nix copy` the
+# binary's own closure into the real (daemon) store first, same fix
+# already needed for examples/qemu's own end-to-end run.
 printf '==> functional: running sandbox-built binary\n'
-sb_bin="$ALT_STORE$sb_out/bin/thin-archive"
+"$PATCHED_NIX/bin/nix" copy --from "local?root=$ALT_STORE" --to daemon \
+  --no-check-sigs "$sb_out" >>"$sb_log" 2>&1 || {
+    echo "could not copy $sb_out to the real store; see $sb_log:" >&2
+    tail -20 "$sb_log" >&2
+    exit 1
+  }
+sb_bin="$sb_out/bin/thin-archive"
 if [[ ! -x "$sb_bin" ]]; then
   echo "sandbox binary missing or not executable: $sb_bin" >&2
   exit 1
