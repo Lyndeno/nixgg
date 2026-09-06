@@ -141,7 +141,23 @@ func Target(path, altStorePrefix string, l paths.Layout) Result {
 		//   1. A sandbox-mode drvref stub: magic header + drv path.
 		//      Written by sandbox.PointOutputAtDrv (see docstring).
 		//   2. A "promoted" store output (force copied bytes here).
-		//   3. Genuinely a regular file.
+		//   3. A foreign dependency already living directly under
+		//      /nix/store/ — not a symlink at all, just an ordinary
+		//      file at its final resolved location. meson (QEMU) and
+		//      some CMake generators emit an absolute store path as a
+		//      literal positional link argument rather than going
+		//      through a -L/-l pair or a SONAME symlink chain — e.g.
+		//      "/nix/store/…-zlib-1.3.2-static/lib/libz.a" appearing
+		//      verbatim on the link line. Every other route to a
+		//      foreign /nix/store/ dependency (an ordinary symlink,
+		//      below) already classifies as Store; treating this one
+		//      differently just because there's no symlink hop would
+		//      silently degrade the WHOLE link to Passthrough (see
+		//      classifyInputs' own docstring on why one unmodelable
+		//      input takes down the entire step) — exactly the
+		//      failure QEMU's own libz.a hit before this case existed.
+		//   4. Genuinely a regular file (produced by some other,
+		//      unshimmed step in the caller's own build tree).
 		if ref := drvref.Path(path); ref != "" {
 			return Result{Kind: Drv, Ref: ref}
 		}
@@ -149,6 +165,14 @@ func Target(path, altStorePrefix string, l paths.Layout) Result {
 			if info := thunk.LookupPromoted(l, path); info != nil {
 				return Result{Kind: Store, Ref: info.StorePath, ThunkID: string(info.ThunkID)}
 			}
+		}
+		canonical := path
+		if altStorePrefix != "" && strings.HasPrefix(path, altStorePrefix+"/nix/store/") {
+			canonical = strings.TrimPrefix(path, altStorePrefix)
+		}
+		if strings.HasPrefix(canonical, "/nix/store/") {
+			root, sub := splitStorePath(canonical)
+			return Result{Kind: Store, Ref: root, Sub: sub}
 		}
 		return Result{Kind: Regular}
 	}

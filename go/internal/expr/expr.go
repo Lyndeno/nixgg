@@ -67,9 +67,12 @@ func linkDerivation(p LinkParams) *Derivation {
 		Tool:             p.Tool,
 		OutName:          p.OutName,
 		Inputs:           inputsToDeriv(p.Inputs),
+		ExtraInputs:      inputsToDeriv(p.ExtraInputs),
 		Flags:            p.Flags,
 		GroupInputs:      p.GroupInputs,
 		InlineFilesStore: p.InlineFilesStore,
+		AbsFilePath:      p.AbsFilePath,
+		AbsFileContent:   p.AbsFileContent,
 		StoreDeps:        p.StoreDeps,
 		WrapperEnv:       p.WrapperEnv,
 	}
@@ -86,16 +89,21 @@ type LinkParams struct {
 	// the form "<outerBuildName>-<targetKey>" to satisfy Nix's own
 	// outputPathName check — see go/internal/shim/link.go's
 	// linkSandbox docstring.
-	Name    string
-	Inputs  []Input
-	Flags   []string
+	Name   string
+	Inputs []Input
+	// See Derivation.ExtraInputs.
+	ExtraInputs []Input
+	Flags       []string
 	// GroupInputs wraps the input list in --start-group/--end-group.
 	// See Derivation.GroupInputs.
 	GroupInputs bool
 	// See Derivation.InlineFilesStore.
 	InlineFilesStore string
-	StoreDeps        []string
-	WrapperEnv       map[string]string
+	// See Derivation.AbsFilePath/AbsFileContent.
+	AbsFilePath    string
+	AbsFileContent string
+	StoreDeps      []string
+	WrapperEnv     map[string]string
 }
 
 // Archive builds an `ar` expression. Same Derivation-based flow.
@@ -105,13 +113,14 @@ func Archive(p ArchiveParams) string {
 
 func archiveDerivation(p ArchiveParams) *Derivation {
 	return &Derivation{
-		Kind:       KindArchive,
-		Name:       p.Name,
-		OutName:    p.OutName,
-		Inputs:     inputsToDeriv(p.Inputs),
-		ARFlags:    p.ARFlags,
-		StoreDeps:  p.StoreDeps,
-		WrapperEnv: p.WrapperEnv,
+		Kind:        KindArchive,
+		Name:        p.Name,
+		OutName:     p.OutName,
+		Inputs:      inputsToDeriv(p.Inputs),
+		ExtraInputs: inputsToDeriv(p.ExtraInputs),
+		ARFlags:     p.ARFlags,
+		StoreDeps:   p.StoreDeps,
+		WrapperEnv:  p.WrapperEnv,
 	}
 }
 
@@ -135,11 +144,13 @@ type ArchiveParams struct {
 	OutName string
 	// Name overrides archiver.nix's default "ar-<OutName>" — see
 	// LinkParams.Name's own docstring for when/why.
-	Name       string
-	Inputs     []Input
-	ARFlags    string
-	StoreDeps  []string
-	WrapperEnv map[string]string
+	Name   string
+	Inputs []Input
+	// See Derivation.ExtraInputs.
+	ExtraInputs []Input
+	ARFlags     string
+	StoreDeps   []string
+	WrapperEnv  map[string]string
 }
 
 // Input describes one linker/archiver input.
@@ -308,22 +319,27 @@ func CompileJSON(p CompileJSONParams) JSONDrv {
 // Inputs coming from already-realised store paths (e.g. system libs
 // referenced via -I on a compile) have Kind="src" and Ref=<basename>.
 type LinkJSONParams struct {
-	Name        string
-	OutName     string
-	System      string
-	Bash        string
-	Coreutils   string
-	Compiler    string
-	Tool        string
-	Inputs      []JSONDrvInput // per-input drv or store-path reference
+	Name      string
+	OutName   string
+	System    string
+	Bash      string
+	Coreutils string
+	Compiler  string
+	Tool      string
+	Inputs    []JSONDrvInput // per-input drv or store-path reference
+	// See Derivation.ExtraInputs.
+	ExtraInputs []JSONDrvInput
 	Flags       []string
 	GroupInputs bool // wrap inputs in --start-group/--end-group
 	// See Derivation.InlineFilesStore.
 	InlineFilesStore string
-	StoreDeps        []string // full /nix/store/... roots referenced; joined into _storeDeps env
-	Placeholder      string
-	ExtraSrcs        []string          // additional basenames for inputs.srcs (bash, coreutils, compiler)
-	Env              map[string]string // wrapper env
+	// See Derivation.AbsFilePath/AbsFileContent.
+	AbsFilePath    string
+	AbsFileContent string
+	StoreDeps      []string // full /nix/store/... roots referenced; joined into _storeDeps env
+	Placeholder    string
+	ExtraSrcs      []string          // additional basenames for inputs.srcs (bash, coreutils, compiler)
+	Env            map[string]string // wrapper env
 }
 
 // JSONDrvInput is one entry in a linker/archiver's input list. Either
@@ -342,14 +358,16 @@ type JSONDrvInput struct {
 
 // ArchiveJSONParams is the sandbox-mode analog of ArchiveParams.
 type ArchiveJSONParams struct {
-	Name        string
-	OutName     string
-	System      string
-	Bash        string
-	Coreutils   string
-	AR          string // full /nix/store/... path to gnu binutils (for `ar`)
-	ARFlags     string // e.g. "rcs"
-	Inputs      []JSONDrvInput
+	Name      string
+	OutName   string
+	System    string
+	Bash      string
+	Coreutils string
+	AR        string // full /nix/store/... path to gnu binutils (for `ar`)
+	ARFlags   string // e.g. "rcs"
+	Inputs    []JSONDrvInput
+	// See Derivation.ExtraInputs.
+	ExtraInputs []JSONDrvInput
 	StoreDeps   []string // full /nix/store/... roots; joined into _storeDeps env
 	Placeholder string
 	ExtraSrcs   []string
@@ -360,17 +378,18 @@ type ArchiveJSONParams struct {
 // Derivation for env/script shape.
 func ArchiveJSON(p ArchiveJSONParams) JSONDrv {
 	d := &Derivation{
-		Kind:       KindArchive,
-		Name:       p.Name,
-		System:     p.System,
-		Bash:       p.Bash,
-		Coreutils:  p.Coreutils,
-		AR:         p.AR,
-		OutName:    p.OutName,
-		ARFlags:    p.ARFlags,
-		Inputs:     inputsFromJSON(p.Inputs),
-		StoreDeps:  p.StoreDeps,
-		WrapperEnv: p.Env,
+		Kind:        KindArchive,
+		Name:        p.Name,
+		System:      p.System,
+		Bash:        p.Bash,
+		Coreutils:   p.Coreutils,
+		AR:          p.AR,
+		OutName:     p.OutName,
+		ARFlags:     p.ARFlags,
+		Inputs:      inputsFromJSON(p.Inputs),
+		ExtraInputs: inputsFromJSON(p.ExtraInputs),
+		StoreDeps:   p.StoreDeps,
+		WrapperEnv:  p.Env,
 	}
 	return d.toJSON(p.ExtraSrcs, nil)
 }
@@ -388,9 +407,12 @@ func LinkJSON(p LinkJSONParams) JSONDrv {
 		Tool:             p.Tool,
 		OutName:          p.OutName,
 		Inputs:           inputsFromJSON(p.Inputs),
+		ExtraInputs:      inputsFromJSON(p.ExtraInputs),
 		Flags:            p.Flags,
 		GroupInputs:      p.GroupInputs,
 		InlineFilesStore: p.InlineFilesStore,
+		AbsFilePath:      p.AbsFilePath,
+		AbsFileContent:   p.AbsFileContent,
 		StoreDeps:        p.StoreDeps,
 		WrapperEnv:       p.Env,
 	}
@@ -525,9 +547,15 @@ func shellQuoteFlags(flags []string) string {
 	}
 	parts := make([]string, 0, len(flags))
 	for _, f := range flags {
-		// Bash single-quote: replace ' with '\''.
-		esc := strings.ReplaceAll(f, "'", `'\''`)
-		parts = append(parts, "'"+esc+"'")
+		parts = append(parts, shellQuote(f))
 	}
 	return strings.Join(parts, " ")
+}
+
+// shellQuote single-quotes one string for a bash `-c` script — the
+// same escaping shellQuoteFlags applies per-element, factored out for
+// callers (e.g. Derivation.absFileScript) that need to quote exactly
+// one path rather than a flag list.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

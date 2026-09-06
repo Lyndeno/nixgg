@@ -247,6 +247,19 @@
         "url": "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.gz"
       }
     },
+    "qemu-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1733874468,
+        "narHash": "sha256-YLhprPL1P+0LCC6N67TGuqCzklHG/mGUU9Kg6lCb66Q=",
+        "type": "tarball",
+        "url": "https://download.qemu.org/qemu-9.2.0.tar.xz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://download.qemu.org/qemu-9.2.0.tar.xz"
+      }
+    },
     "redis-src": {
       "flake": false,
       "locked": {
@@ -275,6 +288,7 @@
         "nix-15793": "nix-15793",
         "nixpkgs": "nixpkgs_2",
         "postgresql-src": "postgresql-src",
+        "qemu-src": "qemu-src",
         "redis-src": "redis-src"
       }
     }

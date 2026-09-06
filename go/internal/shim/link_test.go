@@ -244,6 +244,11 @@ func TestLinkerScriptPath(t *testing.T) {
 		{"version-script attached", []string{"-Wl,--version-script=libcrypto.ld"}, "libcrypto.ld"},
 		{"version-script build-tree path", []string{"main.o", "-Wl,--version-script=engines/afalg.ld", "-o", "afalg.so"}, "engines/afalg.ld"},
 		{"-Wl,-T comma form", []string{"-Wl,-T,script.ld"}, "script.ld"},
+		{"-Wl,--dynamic-list= comma form", []string{"-Wl,--dynamic-list=plugins/qemu-plugin.symbols"}, "plugins/qemu-plugin.symbols"},
+		{"-Xlinker --dynamic-list= two-token form", []string{"-Xlinker", "--dynamic-list=/build/source/build/plugins/qemu-plugin.symbols"}, "/build/source/build/plugins/qemu-plugin.symbols"},
+		{"-Xlinker --version-script= two-token form", []string{"-Xlinker", "--version-script=libfoo.ld"}, "libfoo.ld"},
+		{"-Xlinker with an unrelated value is not a script", []string{"-Xlinker", "-z,now"}, ""},
+		{"trailing -Xlinker with no value", []string{"main.o", "-Xlinker"}, ""},
 		{"separate -T", []string{"-T", "script.ld"}, "script.ld"},
 		{"attached -Tscript.ld", []string{"-Tscript.ld"}, "script.ld"},
 		{"-Ttext= is an address, not a script", []string{"-Ttext=0x1000"}, ""},
@@ -407,13 +412,14 @@ func TestClassifyInputsSonameAliasUsesRealOutputName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, jsonInputs, err, ok := classifyInputs(&toolchain.Config{}, []string{alias}, "", paths.Layout{}, "link", func() error {
+	ci, err, ok := classifyInputs(&toolchain.Config{}, []string{alias}, "", paths.Layout{}, "link", func() error {
 		t.Fatal("should not passthrough — the alias resolves to one of our own drvref stubs")
 		return nil
 	})
 	if err != nil || !ok {
 		t.Fatalf("classifyInputs failed: ok=%v err=%v", ok, err)
 	}
+	jsonInputs := ci.JSON
 	if len(jsonInputs) != 1 {
 		t.Fatalf("got %d jsonInputs, want 1", len(jsonInputs))
 	}

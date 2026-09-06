@@ -47,6 +47,47 @@ func TestTargetPlainFileIsRegular(t *testing.T) {
 	}
 }
 
+// TestTargetLiteralStorePathIsStore pins a shape no earlier fixture
+// exercised: a foreign dependency referenced by a LITERAL, already-
+// resolved /nix/store/... path with no symlink hop at all — e.g.
+// meson's build.ninja putting zlib's absolute
+// ".../zlib-1.3.2-static/lib/libz.a" directly on a link line, rather
+// than via -l/-L or a SONAME symlink chain. Every other route to a
+// foreign store dependency (an ordinary symlink resolving into
+// /nix/store/) already classified as Store; missing this one meant
+// classify.Target fell through to Regular, which degrades the WHOLE
+// link to Passthrough (classifyInputs bails out the moment any one
+// input can't be modeled) — confirmed directly against a real QEMU
+// build, whose zlib dependency has exactly this shape.
+func TestTargetLiteralStorePathIsStore(t *testing.T) {
+	// Can't actually create a file under /nix/store in a unit test, so
+	// exercise the altStorePrefix branch instead: the alt-store's own
+	// on-disk root stands in for "/nix/store" the same way sandbox mode's
+	// real store does, and Target's alt-store-stripping logic is
+	// identical between the two branches (see the symlink branch's own
+	// "canonical" handling just above this one).
+	dir := t.TempDir()
+	storeDir := filepath.Join(dir, "nix", "store", "abc123-zlib-1.3.2-static", "lib")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f := filepath.Join(storeDir, "libz.a")
+	if err := os.WriteFile(f, []byte("!<arch>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := Target(f, dir, paths.Layout{})
+	if got.Kind != Store {
+		t.Fatalf("Kind = %v, want Store", got.Kind)
+	}
+	wantRef := "/nix/store/abc123-zlib-1.3.2-static"
+	if got.Ref != wantRef {
+		t.Errorf("Ref = %q, want %q", got.Ref, wantRef)
+	}
+	if got.Sub != "lib/libz.a" {
+		t.Errorf("Sub = %q, want %q", got.Sub, "lib/libz.a")
+	}
+}
+
 // TestTargetAbsent pins that a missing path is Absent, not Regular —
 // the shims treat both as "pass through", but the distinction shows up
 // in the log line and is worth keeping honest.

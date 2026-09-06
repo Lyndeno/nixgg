@@ -25,6 +25,16 @@
   # full mechanism.
   name ? "bin-${outName}",
   inputs,
+  # Dependency-only inputs: same { drv, name } shape as `inputs`, but
+  # never interpolated into the script — only into the derivation's
+  # own dependency edges (via _extraInputs below). A thin archive's
+  # own members need to be MOUNTED into this derivation's sandbox
+  # (the archive stores absolute path references to them, not their
+  # bytes — see internal/members' package docstring) without being
+  # listed a second time on the actual link/ar command line, which
+  # would make the linker see each symbol twice. See
+  # expr.Derivation.ExtraInputs' own docstring for the full story.
+  extraInputs ? [ ],
   scriptTemplate,
   markerTag,
   storeDepsJSON ? "[]",
@@ -60,4 +70,11 @@ derivation ({
   args = [ "-c" script ];
 
   _storeDeps = builtins.concatStringsSep ":" storeDeps;
+  # Dependency-only: Nix's own string-context scan picks up each
+  # `${item.drv}/${item.name}` reference here and adds the edge to
+  # this derivation's inputDrvs/inputSrcs, exactly like _storeDeps
+  # above — but this text never reaches the script (resolve-script.nix
+  # only ever sees `inputs`, not `extraInputs`).
+  _extraInputs = builtins.concatStringsSep ":"
+    (map (i: "${i.drv}/${i.name}") extraInputs);
 } // wrapperEnv // (if srcTree == null then { } else { src = srcTree; }))

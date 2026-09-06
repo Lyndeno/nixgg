@@ -6,6 +6,7 @@ import (
 
 	"github.com/tbereknyei/nixgg/internal/activitylog"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/members"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
 	"github.com/tbereknyei/nixgg/internal/storedeps"
@@ -46,7 +47,7 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	}
 
 	altPrefix := altStorePrefix(cfg.Store)
-	arInputs, jsonInputs, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "ar", func() error {
+	ci, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "ar", func() error {
 		return Passthrough(realARFor(cfg), args)
 	})
 	if !ok {
@@ -63,7 +64,17 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	storeDeps := storedeps.From(nil, wrapperEnvJSON, cfg.KnownStorePaths)
 
 	if sandbox.Enabled() {
-		return archiveSandbox(cfg, archive, modifiers, jsonInputs, storeDeps, wrapperEnvJSON)
+		drvPath, err := archiveSandbox(cfg, archive, modifiers, ci.JSON, ci.ExtraJSON, storeDeps, wrapperEnvJSON)
+		if err != nil {
+			return err
+		}
+		if strings.ContainsRune(modifiers, 'T') {
+			key := expr.StoreBasename(drvPath)
+			if _, err := members.Write(l, key, jsonDrvInputsToRecords(ci.JSON)); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
@@ -71,13 +82,14 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		return err
 	}
 	e := expr.Archive(expr.ArchiveParams{
-		Helpers:    cfg.Helpers,
-		Name:       multiTargetName(archive),
-		OutName:    filepath.Base(archive),
-		Inputs:     arInputs,
-		ARFlags:    modifiers,
-		StoreDeps:  storeDeps,
-		WrapperEnv: wrapperEnv,
+		Helpers:     cfg.Helpers,
+		Name:        multiTargetName(archive),
+		OutName:     filepath.Base(archive),
+		Inputs:      ci.Link,
+		ExtraInputs: ci.ExtraLink,
+		ARFlags:     modifiers,
+		StoreDeps:   storeDeps,
+		WrapperEnv:  wrapperEnv,
 	})
 
 	id := thunk.Compute(e)
@@ -91,9 +103,34 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 	if err := thunk.RecordSymlink(l, id, archive); err != nil {
 		return err
 	}
+	if strings.ContainsRune(modifiers, 'T') {
+		if _, err := members.Write(l, string(id), inputsToRecords(ci.Link)); err != nil {
+			return err
+		}
+	}
 	logf("  thunk:      %s", thunkPath)
-	activitylog.Emit("ar", "thunk", activitylog.Fields{"archive": archive, "thunk": thunkPath, "inputs": arInputs})
+	activitylog.Emit("ar", "thunk", activitylog.Fields{"archive": archive, "thunk": thunkPath, "inputs": ci.Link})
 	return nil
+}
+
+// inputsToRecords/jsonDrvInputsToRecords convert classifyInputs' own
+// native/sandbox input slices into members.Record — deliberately
+// identical field-for-field, since members.Record's own docstring
+// states it's meant as a drop-in mirror of expr.Input/JSONDrvInput.
+func inputsToRecords(in []expr.Input) []members.Record {
+	out := make([]members.Record, len(in))
+	for i, v := range in {
+		out[i] = members.Record{Kind: v.Kind, Ref: v.Ref, Name: v.Name}
+	}
+	return out
+}
+
+func jsonDrvInputsToRecords(in []expr.JSONDrvInput) []members.Record {
+	out := make([]members.Record, len(in))
+	for i, v := range in {
+		out[i] = members.Record{Kind: v.Kind, Ref: v.Ref, Name: v.Name}
+	}
+	return out
 }
 
 // parseARArgs pulls the modifier string, archive path, and input list.
@@ -138,7 +175,16 @@ func isARModifiers(s string) bool {
 	}
 	// Union of the modifier characters ar accepts. Anything outside
 	// means we're looking at a positional arg, not modifiers.
-	allowed := "cruvsDxtpqRUbNaimoPS"
+	//
+	// "T" (thin archive: store each member's own file path instead of
+	// embedding its bytes) is included deliberately, not by omission
+	// — see members.go's own docstring for why a thin archive is safe
+	// under nixgg's model (every member is already resolved to a
+	// permanent, immutable store path before `ar` ever runs, same as
+	// a normal archive) and what makes it actually work (the
+	// members sidecar, propagated into any later consumer's own
+	// inputs by classifyInputs).
+	allowed := "cruvsDxtpqRUbNaimoPST"
 	for _, r := range s {
 		if !strings.ContainsRune(allowed, r) {
 			return false
@@ -163,17 +209,23 @@ func realARFor(cfg *toolchain.Config) string {
 // targets is itself an archive). See maybeSubmit's own docstring for
 // the naming override a multi-target match needs, mirrored here the
 // same way linkSandbox does it.
+//
+// Returns the registered drv path so a caller building a THIN archive
+// can key its own members.Write sidecar off it — see members.go's own
+// docstring for why that key must match what classify.Target/
+// classifyInputs will later derive for this same archive.
 func archiveSandbox(
 	cfg *toolchain.Config,
 	archive, modifiers string,
 	inputs []expr.JSONDrvInput,
+	extraInputs []expr.JSONDrvInput,
 	storeDeps []string,
 	wrapperEnvJSON string,
-) error {
+) (string, error) {
 	outName := filepath.Base(archive)
 	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
 	if err != nil {
-		return err
+		return "", err
 	}
 	// `ar` lives in the same dir as the caller's real cc — that's the
 	// gcc-wrapper's binutils dependency.
@@ -192,6 +244,7 @@ func archiveSandbox(
 		AR:          arRoot,
 		ARFlags:     modifiers,
 		Inputs:      inputs,
+		ExtraInputs: extraInputs,
 		StoreDeps:   storeDeps,
 		Placeholder: "/" + expr.OutPlaceholderNix32,
 		ExtraSrcs: []string{
@@ -203,15 +256,15 @@ func archiveSandbox(
 	})
 	drvPath, err := sandbox.DerivationAdd(cfg, drv)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := sandbox.PointOutputAtDrv(archive, drvPath); err != nil {
-		return err
+		return "", err
 	}
 	logf("  drv:        %s", drvPath)
 	activitylog.Emit("ar", "drv", activitylog.Fields{"archive": archive, "drv": drvPath})
 
 	// See maybeSubmit's comment.
 	maybeSubmit(cfg, drvPath, archive, false)
-	return nil
+	return drvPath, nil
 }

@@ -62,12 +62,14 @@ QUICK=(
   "lua|bin/lua|%s -v"
   "gcc|lib/libiberty.a|-"
   "mosh|bin/mosh-server|%s --version"
+  "thin-archive|bin/thin-archive|%s"
 )
 SLOW=(
   "redis|bin/redis-server|%s --version"
   "ffmpeg|bin/ffmpeg_g|%s -version"
   "llvm|bin/llc|%s --version"
   "postgresql|bin/postgres|%s --version"
+  "qemu|bin/qemu-system-x86_64|%s --version"
 )
 
 # splitAtBuild-only examples (nix/splitStdenv.nix) — an existing

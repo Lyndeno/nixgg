@@ -177,3 +177,62 @@ func TestLinkScriptEmitsLibFlagsAfterInputs(t *testing.T) {
 		}
 	})
 }
+
+// TestAbsFileScriptRecreatesGeneratedFileBeforeLinking pins the
+// mechanism QEMU's `-Xlinker --dynamic-list=/build/source/build/
+// plugins/qemu-plugin.symbols` needs: AbsFilePath/AbsFileContent must
+// recreate the referenced file, at its exact absolute path, BEFORE
+// the link command runs — confirmed by asserting the mkdir+heredoc
+// text appears ahead of the "cc" invocation in the rendered script.
+// Unlike InlineFilesStore's relative-path mechanism (a real `cp` from
+// a staged store path), this is embedded directly as script text —
+// safe here because every real producer of this shape (meson's
+// configure_file()) writes a small generated symbol list, not a
+// large tree.
+func TestAbsFileScriptRecreatesGeneratedFileBeforeLinking(t *testing.T) {
+	d := &Derivation{
+		Kind:           KindLink,
+		Tool:           "cc",
+		OutName:        "qemu-system-x86_64",
+		Coreutils:      "/COREUTILS",
+		Compiler:       "/GCC",
+		AbsFilePath:    "/build/source/build/plugins/qemu-plugin.symbols",
+		AbsFileContent: "{\n  qemu_plugin_foo;\n};\n",
+		Inputs: []derivInput{
+			{InputKind: "store", Ref: "/nix/store/" + strings.Repeat("a", 32) + "-tu-main.o", Name: "main.o"},
+		},
+	}
+	s := d.script()
+
+	wantDir := "mkdir -p '/build/source/build/plugins'"
+	if !strings.Contains(s, wantDir) {
+		t.Errorf("script missing %q:\n%s", wantDir, s)
+	}
+	wantHeredoc := "cat > '/build/source/build/plugins/qemu-plugin.symbols' <<'NIXGG_ABS_FILE_EOF'\n{\n  qemu_plugin_foo;\n};\nNIXGG_ABS_FILE_EOF"
+	if !strings.Contains(s, wantHeredoc) {
+		t.Errorf("script missing heredoc write:\n%s\n---got---\n%s", wantHeredoc, s)
+	}
+	if at, atCC := strings.Index(s, wantDir), strings.Index(s, `"cc"`); at < 0 || atCC < 0 || at > atCC {
+		t.Errorf("mkdir+write must appear BEFORE the link command; got mkdir@%d cc@%d\n%s", at, atCC, s)
+	}
+}
+
+// TestAbsFileScriptEmptyIsANoOp pins that a derivation with no
+// AbsFilePath renders exactly as it did before this field existed —
+// the mechanism must be a no-op for every existing fixture, none of
+// which reference an absolute-path linker script.
+func TestAbsFileScriptEmptyIsANoOp(t *testing.T) {
+	d := &Derivation{
+		Kind:      KindLink,
+		Tool:      "cc",
+		OutName:   "prog",
+		Coreutils: "/COREUTILS",
+		Compiler:  "/GCC",
+		Inputs: []derivInput{
+			{InputKind: "store", Ref: "/nix/store/" + strings.Repeat("a", 32) + "-tu-main.o", Name: "main.o"},
+		},
+	}
+	if s := d.script(); strings.Contains(s, "NIXGG_ABS_FILE_EOF") {
+		t.Errorf("empty AbsFilePath must not emit any heredoc:\n%s", s)
+	}
+}

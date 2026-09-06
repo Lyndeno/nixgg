@@ -24,6 +24,7 @@ type Layout struct {
 	Symlinks string // .nixgg/symlinks/
 	Promoted string // .nixgg/promoted/ — sha1(abs-path) → store path
 	Batches  string // .nixgg/batches/<group>/ — pending batch member records
+	Members  string // .nixgg/members/ — thin-archive member-list sidecars
 }
 
 // Resolve returns the on-disk layout for the current nixgg workspace.
@@ -38,7 +39,7 @@ type Layout struct {
 //  4. Fall back to $PWD/.nixgg/thunks (no git, no ancestor .nixgg).
 //
 // Each subdir can be overridden individually via NIXGG_{SRCS,SCANS,
-// SYMLINKS,PROMOTED,BATCHES}_DIR.
+// SYMLINKS,PROMOTED,BATCHES,MEMBERS}_DIR.
 func Resolve() (Layout, error) {
 	thunks := os.Getenv("NIXGG_THUNKS_DIR")
 	if thunks == "" {
@@ -60,6 +61,7 @@ func Resolve() (Layout, error) {
 		Symlinks: envOr("NIXGG_SYMLINKS_DIR", filepath.Join(parent, "symlinks")),
 		Promoted: envOr("NIXGG_PROMOTED_DIR", filepath.Join(parent, "promoted")),
 		Batches:  envOr("NIXGG_BATCHES_DIR", filepath.Join(parent, "batches")),
+		Members:  envOr("NIXGG_MEMBERS_DIR", filepath.Join(parent, "members")),
 	}, nil
 }
 

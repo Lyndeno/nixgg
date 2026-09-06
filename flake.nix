@@ -103,10 +103,22 @@
     url = "https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.gz";
     flake = false;
   };
+  inputs.qemu-src = {
+    # QEMU 9.2.0 — meson+ninja, a build-system genre no other example
+    # uses (plain Makefile/autotools/cmake+ninja are the existing
+    # ones). See examples/qemu's own docstring for the deliberate
+    # scope-down (--target-list=x86_64-softmmu, tools/tests/docs
+    # disabled) and confirmation that QEMU's own build-time codegen
+    # (QAPI, decodetree.py, tracetool.py) is pure find_program-driven
+    # Python/shell, never a compiled-and-exec'd QEMU binary — so
+    # unlike zstd/gcc, no phase-chaining fix is needed here.
+    url = "https://download.qemu.org/qemu-9.2.0.tar.xz";
+    flake = false;
+  };
 
   outputs =
     { self, nixpkgs, nix-15793, lua-src, fmt-src, mosh-src, redis-src, ffmpeg-src,
-      gcc-src, llvm-src, postgresql-src }:
+      gcc-src, llvm-src, postgresql-src, qemu-src }:
     let
       forEachSystem = f: builtins.mapAttrs (system: pkgs: f system pkgs) nixpkgs.legacyPackages;
     in
@@ -776,6 +788,22 @@
               dir = ./examples/postgresql;
               args = { inherit (pkgs) bison flex perl; src = postgresql-src; };
             };
+            # QEMU's own x86_64-softmmu target — meson+ninja, the one
+            # build-system genre no other example exercises. See
+            # examples/qemu's own docstring for the deliberate
+            # scope-down (one target, tools/tests/docs disabled) and
+            # confirmation that its own build-time codegen never execs
+            # a compiled QEMU binary (pure find_program-driven Python/
+            # shell), so no phase-chaining fix is needed here unlike
+            # zstd/gcc.
+            qemu = {
+              dir = ./examples/qemu;
+              args = {
+                inherit (pkgs) pkg-config meson ninja glib pixman ncurses zlib;
+                pythonWithMesonDeps = pkgs.python3.withPackages (ps: [ ps.distlib ps.setuptools ]);
+                src = qemu-src;
+              };
+            };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the
             # phase-chaining pattern examples/llvm relies on.
@@ -785,6 +813,15 @@
                 codegenSrc = ./examples/two-phase/codegen;
                 appSrc = ./examples/two-phase/app;
               };
+            };
+            # Minimal reproduction of the ar --thin mechanism QEMU's
+            # meson build exercises at scale (see examples/thin-archive's
+            # own docstring and go/internal/members' package docstring).
+            # tests/thin-archive-equivalence.sh is this fixture's own
+            # dedicated native/sandbox byte-identity check.
+            thin-archive = {
+              dir = ./examples/thin-archive;
+              args = { inherit (pkgs) lib; };
             };
             # llvm-src is a monorepo checkout, which already has llvm/,
             # cmake/, and third-party/ side by side — exactly the layout

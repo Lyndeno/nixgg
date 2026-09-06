@@ -59,26 +59,46 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 
 	logf("link %s <- %s", output, joinBase(inputs))
 
-	// A linker-script flag (-Wl,--version-script=<path>, -Wl,-T,<path>)
-	// names a file some UNSHIMMED tool in the caller's own build wrote
-	// moments earlier (e.g. openssl's `perl util/mkdef.pl > libcrypto.ld`)
-	// — never something nixgg itself produced. The link this flag is
-	// part of runs inside its own dynamic derivation with a fresh
-	// sandbox root that never saw this file, so it has to be staged
-	// explicitly, same principle compile.go already uses for local
-	// headers (read the real bytes now, before anything downstream
-	// could turn the path into a drvref stub). If it's genuinely
-	// absent — never generated, or already something nixgg tracks a
-	// different way — fall back to passthrough rather than guessing.
+	// A linker-script flag (-Wl,--version-script=<path>, -Wl,-T,<path>,
+	// -Xlinker --dynamic-list=<path>) names a file some UNSHIMMED tool
+	// in the caller's own build wrote moments earlier (e.g. openssl's
+	// `perl util/mkdef.pl > libcrypto.ld`, or meson's configure_file()
+	// generating QEMU's plugin-symbols list) — never something nixgg
+	// itself produced. The link this flag is part of runs inside its
+	// own dynamic derivation with a fresh sandbox root that never saw
+	// this file, so it has to be staged explicitly, same principle
+	// compile.go already uses for local headers (read the real bytes
+	// now, before anything downstream could turn the path into a
+	// drvref stub). If it's genuinely absent — never generated, or
+	// already something nixgg tracks a different way — fall back to
+	// passthrough rather than guessing.
 	//
-	// Staged via stage.ContentFiles + (sandbox mode only)
-	// sandbox.StoreAddScan, same as compile.go's own SrcStore — NOT
-	// embedded as text in the build script. A large generated linker
-	// script plus hundreds of real object-file paths on one link line
-	// can exceed the kernel's argv limit if baked into the script
-	// body directly (confirmed directly against openssl's
-	// libcrypto.so.3 — "Argument list too long").
-	var inlineFilesStore string
+	// Two staging mechanisms, chosen by whether the path is relative
+	// or absolute:
+	//
+	//   - Relative (openssl's case): staged via stage.ContentFiles +
+	//     (sandbox mode only) sandbox.StoreAddScan, same as
+	//     compile.go's own SrcStore — NOT embedded as text in the
+	//     build script. A large generated linker script plus hundreds
+	//     of real object-file paths on one link line can exceed the
+	//     kernel's argv limit if baked into the script body directly
+	//     (confirmed directly against openssl's libcrypto.so.3 —
+	//     "Argument list too long"). InlineFilesStore's `cp -a
+	//     "$src/." .` only reproduces paths relative to the link's own
+	//     cwd, which is exactly what this case needs.
+	//   - Absolute (QEMU's case): meson bakes the OUTER derivation's
+	//     own build-tree absolute path into the generated file's name
+	//     at configure time (e.g.
+	//     "/build/source/build/plugins/qemu-plugin.symbols"). The
+	//     relative-path mechanism above can't reproduce this — the
+	//     link derivation's own sandbox has no "source/build/plugins/"
+	//     subtree to copy into. Embedded directly as script text via
+	//     Derivation.AbsFilePath/AbsFileContent instead: every real
+	//     fixture that hits this is a small generated symbol-export
+	//     list (QEMU's own is 59 lines), not a large tree, so the argv-
+	//     limit concern that ruled out embedding for the relative case
+	//     doesn't apply here.
+	var inlineFilesStore, absFilePath, absFileContent string
 	if path := linkerScriptPath(args); path != "" {
 		c := classify.Target(path, altStorePrefix(cfg.Store), l)
 		if c.Kind != classify.Regular {
@@ -90,24 +110,29 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 			logf("link passthrough: linker script %s: %v", path, err)
 			return Passthrough(realTool, args)
 		}
-		id := "inline-" + filepath.Base(output) + "-" + filepath.Base(path)
-		stageDir, err := stage.ContentFiles(l, id, []stage.FileEntry{{Rel: path, Content: content}})
-		if err != nil {
-			return fmt.Errorf("stage linker script %s: %w", path, err)
-		}
-		if sandbox.Enabled() {
-			inlineFilesStore, err = sandbox.StoreAddScan(cfg, id, stageDir)
-			if err != nil {
-				return fmt.Errorf("stage linker script %s to store: %w", path, err)
-			}
+		if filepath.IsAbs(path) {
+			absFilePath = path
+			absFileContent = string(content)
 		} else {
-			inlineFilesStore = stageDir
+			id := "inline-" + filepath.Base(output) + "-" + filepath.Base(path)
+			stageDir, err := stage.ContentFiles(l, id, []stage.FileEntry{{Rel: path, Content: content}})
+			if err != nil {
+				return fmt.Errorf("stage linker script %s: %w", path, err)
+			}
+			if sandbox.Enabled() {
+				inlineFilesStore, err = sandbox.StoreAddScan(cfg, id, stageDir)
+				if err != nil {
+					return fmt.Errorf("stage linker script %s to store: %w", path, err)
+				}
+			} else {
+				inlineFilesStore = stageDir
+			}
 		}
 	}
 
 	// Classify each input.
 	altPrefix := altStorePrefix(cfg.Store)
-	linkInputs, jsonInputs, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "link", func() error {
+	ci, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "link", func() error {
 		return Passthrough(realTool, args)
 	})
 	if !ok {
@@ -122,7 +147,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 
 	// Sandbox mode: emit JSON, submit as this outer derivation's output.
 	if sandbox.Enabled() {
-		return linkSandbox(cfg, tool, output, jsonInputs, flags, group, inlineFilesStore, storeDeps, wrapperEnvJSON)
+		return linkSandbox(cfg, tool, output, ci.JSON, ci.ExtraJSON, flags, group, inlineFilesStore, absFilePath, absFileContent, storeDeps, wrapperEnvJSON)
 	}
 
 	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
@@ -134,10 +159,13 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 		Name:             multiTargetName(output),
 		Tool:             tool.Basename(),
 		OutName:          filepath.Base(output),
-		Inputs:           linkInputs,
+		Inputs:           ci.Link,
+		ExtraInputs:      ci.ExtraLink,
 		Flags:            flags,
 		GroupInputs:      group,
 		InlineFilesStore: inlineFilesStore,
+		AbsFilePath:      absFilePath,
+		AbsFileContent:   absFileContent,
 		StoreDeps:        storeDeps,
 		WrapperEnv:       wrapperEnv,
 	})
@@ -264,20 +292,53 @@ func parseLinkArgs(args []string) (output string, inputs, flags []string, group,
 }
 
 // linkerScriptPath scans a link line for a linker-script flag and
-// returns the path it names, or "" if none is present. Handles the
-// two forms GNU ld / gcc accept: `-Wl,--version-script=<path>` /
-// `-Wl,-T,<path>` (comma-joined, passed straight through by gcc) and
-// the plain `-T <path>` / `-T<path>` forms (rare on a compiler
-// driver's own command line, but ld itself accepts them). Excludes
-// `-Ttext=`/`-Tdata=`/`-Tbss=` — same `-T` prefix, but an address
-// override, not a script path.
+// returns the path it names, or "" if none is present. Handles:
+//
+//   - `-Wl,--version-script=<path>` / `-Wl,-T,<path>` (comma-joined,
+//     passed straight through by gcc)
+//   - the plain `-T <path>` / `-T<path>` forms (rare on a compiler
+//     driver's own command line, but ld itself accepts them)
+//   - `-Wl,--dynamic-list=<path>` — same shape as --version-script
+//     (a generated file listing symbols), different ld flag; QEMU's
+//     meson build emits this for its plugin-symbol-export list
+//     (build/plugins/qemu-plugin.symbols, generated by meson's own
+//     configure_file() at ./configure time — present in the working
+//     tree when the link runs, but never staged into the link's own
+//     sandbox without this).
+//   - `-Xlinker <value>` (two argv tokens: gcc passes <value> to the
+//     linker verbatim, unlike the comma-joined `-Wl,` form). QEMU
+//     emits `-Xlinker --dynamic-list=<path>` this way rather than
+//     `-Wl,--dynamic-list=<path>` — confirmed directly against a
+//     real QEMU 9.2.0 x86_64-softmmu build's own link line.
+//
+// Excludes `-Ttext=`/`-Tdata=`/`-Tbss=` — same `-T` prefix, but an
+// address override, not a script path.
 func linkerScriptPath(args []string) string {
+	// bareFlagValue recognizes the ld flag spellings that name a
+	// generated file, without any -Wl,/-Xlinker wrapper — shared by
+	// both the comma-joined and -Xlinker branches below so the two
+	// forms can't drift on which flags they recognize.
+	bareFlagValue := func(a string) (string, bool) {
+		if v, ok := strings.CutPrefix(a, "--version-script="); ok {
+			return v, true
+		}
+		if v, ok := strings.CutPrefix(a, "--dynamic-list="); ok {
+			return v, true
+		}
+		return "", false
+	}
 	for i, a := range args {
 		switch {
 		case strings.HasPrefix(a, "-Wl,--version-script="):
 			return strings.TrimPrefix(a, "-Wl,--version-script=")
+		case strings.HasPrefix(a, "-Wl,--dynamic-list="):
+			return strings.TrimPrefix(a, "-Wl,--dynamic-list=")
 		case strings.HasPrefix(a, "-Wl,-T,"):
 			return strings.TrimPrefix(a, "-Wl,-T,")
+		case a == "-Xlinker" && i+1 < len(args):
+			if v, ok := bareFlagValue(args[i+1]); ok {
+				return v
+			}
 		case a == "-T" && i+1 < len(args):
 			return args[i+1]
 		case strings.HasPrefix(a, "-T") && len(a) > 2 &&
@@ -473,9 +534,12 @@ func linkSandbox(
 	tool dispatch.Tool,
 	output string,
 	inputs []expr.JSONDrvInput,
+	extraInputs []expr.JSONDrvInput,
 	flags []string,
 	group bool,
 	inlineFilesStore string,
+	absFilePath string,
+	absFileContent string,
 	storeDeps []string,
 	wrapperEnvJSON string,
 ) error {
@@ -505,9 +569,12 @@ func linkSandbox(
 		Compiler:         cfg.CompilerRoot,
 		Tool:             tool.Basename(),
 		Inputs:           inputs,
+		ExtraInputs:      extraInputs,
 		Flags:            flags,
 		GroupInputs:      group,
 		InlineFilesStore: inlineFilesStore,
+		AbsFilePath:      absFilePath,
+		AbsFileContent:   absFileContent,
 		StoreDeps:        storeDeps,
 		Placeholder:      "/" + expr.OutPlaceholderNix32,
 		ExtraSrcs:        extraSrcs,

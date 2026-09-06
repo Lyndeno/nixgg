@@ -17,6 +17,10 @@
   # default "ar-<outName>" convention preserved.
   name ? "ar-${outName}",
   inputs,
+  # Dependency-only inputs — see linker.nix's own docstring for the
+  # full mechanism (identical here: a thin archive's members must be
+  # mounted, not re-emitted into the `ar` command line).
+  extraInputs ? [ ],
   scriptTemplate,
   markerTag,
   storeDepsJSON ? "[]",
@@ -45,4 +49,6 @@ derivation ({
   args = [ "-c" script ];
 
   _storeDeps = builtins.concatStringsSep ":" storeDeps;
+  _extraInputs = builtins.concatStringsSep ":"
+    (map (i: "${i.drv}/${i.name}") extraInputs);
 } // wrapperEnv)

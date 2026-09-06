@@ -151,3 +151,29 @@ jobs:
       # header comment for why both matter.
       - name: Run batch-drv-equivalence
         run: PATCHED_NIX="$PWD/.patched-nix" bash tests/batch-drv-equivalence.sh
+
+  thin-archive-equivalence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same AppArmor userns workaround as the smoke job above — see
+      # its comment for why this is needed on ubuntu-latest.
+      - name: Allow unprivileged user namespaces (Nix sandbox needs this on ubuntu-latest)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Build patched-nix
+        run: nix build --no-eval-cache --accept-flake-config .#patched-nix -o .patched-nix
+
+      # A thin archive's (`ar csrDT`) own equivalence check — see
+      # go/internal/members's package docstring for the mechanism this
+      # proves: native and sandbox modes must produce byte-identical
+      # drvs for a link that consumes a thin archive, and both modes'
+      # resulting binary must actually run. First exercised at scale
+      # by the qemu example (meson's internal static libraries all use
+      # this shape); this is the minimal, dedicated reproduction.
+      - name: Run thin-archive-equivalence
+        run: PATCHED_NIX="$PWD/.patched-nix" bash tests/thin-archive-equivalence.sh

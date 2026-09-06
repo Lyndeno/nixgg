@@ -39,6 +39,8 @@ nix run .#hello
 nix build .#lua         # lua 5.4.7 — 32 TUs, 1 archive, 1 link
 nix build .#fmt         # {fmt} 11.0.2 — cmake + ninja + libfmt.a
 nix build .#mosh        # mosh unstable — autoconf + protobuf + openssl/ncurses/zlib
+nix build .#postgresql  # postgresql 17.2 — src/backend only, autoconf + recursive make
+nix build .#qemu        # qemu 9.2.0 — meson + ninja, ~1700 steps, thin (`ar T`) archives
 ```
 
 Both modes produce byte-identical `.drv` files, by construction: the
@@ -62,6 +64,13 @@ Several tests, covering different failure modes:
   combined compile+archive derivation shape (`lua-batch`,
   `redis-batch`), which the plain drv-equivalence check above can't
   see (it's a different derivation Kind entirely).
+- [tests/thin-archive-equivalence.sh](tests/thin-archive-equivalence.sh)
+  — the same invariant again, for a THIN archive (`ar csrDT`): an
+  archive whose on-disk bytes are absolute path *references* to its
+  members rather than embedded content, requiring a later link to
+  have those members mounted into its own sandbox too (see
+  `go/internal/members`'s package docstring) — first exercised at
+  scale by `qemu`'s meson build, below.
 - [tests/smoke.sh](tests/smoke.sh) — every example builds, its artifact
   is at the FHS path it should be, and it runs. ~2 min;
   `EXAMPLES=all` adds redis, ffmpeg and llvm.

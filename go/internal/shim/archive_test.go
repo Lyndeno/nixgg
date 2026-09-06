@@ -59,6 +59,13 @@ func TestParseARArgs(t *testing.T) {
 			wantOK: false,
 		},
 		{
+			// T (thin archive) is a modelled modifier, same as any
+			// other — meson emits exactly this for QEMU's internal
+			// static libraries.
+			name: "thin archive modifiers", args: []string{"csrDT", "libqemuutil.a", "a.o", "b.o"},
+			wantMods: "csrDT", wantArch: "libqemuutil.a", wantInputs: []string{"a.o", "b.o"}, wantOK: true,
+		},
+		{
 			name: "modifier outside the alphabet bails", args: []string{"rzz", "libfoo.a", "a.o"},
 			wantOK: false,
 		},
@@ -147,6 +154,8 @@ func TestIsARModifiers(t *testing.T) {
 		{"libfoo.a", false}, // a real filename must not read as modifiers
 		{"2", false},        // a positional count must not read as modifiers
 		{"rN", true},        // accepted, and that is what enables the misparse
+		{"csrDT", true},     // meson's own thin-archive modifiers (T = thin)
+		{"T", true},         // bare thin flag
 	} {
 		if got := isARModifiers(tc.in); got != tc.want {
 			t.Errorf("isARModifiers(%q) = %v, want %v", tc.in, got, tc.want)

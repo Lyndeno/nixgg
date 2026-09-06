@@ -71,6 +71,32 @@ type Derivation struct {
 	// store paths). Compile leaves this empty.
 	Inputs []derivInput
 
+	// ExtraInputs are dependency-only: Nix must mount them into this
+	// derivation's sandbox — they go through the exact SAME
+	// dependency-declaring code paths as Inputs (derivInputsList's
+	// own rendering, interpolated by linker.nix/archiver.nix into
+	// their own `_extraInputs` env attr in native mode; toJSON's
+	// drvs/srcs maps, mirrored into envDict's own `_extraInputs` key
+	// in JSON mode — see envDict's own docstring) — but they never
+	// appear in the actual command line the way Inputs does.
+	//
+	// The one producer today: a thin archive (`ar T`) consumed by a
+	// LATER link/archive step. That archive's own on-disk bytes are
+	// just absolute path REFERENCES to its members, not embedded
+	// content (see internal/members' package docstring) — so the
+	// consuming derivation's sandbox needs those member paths mounted
+	// too, or the linker can't read through them. But the members are
+	// already reachable from inside the archive's own bytes; putting
+	// them a second time on the actual `cc`/`ar` command line (the
+	// same way an ordinary Inputs entry would be) makes the linker see
+	// each symbol twice — confirmed directly: an early version that
+	// merged thin-archive members into Inputs itself produced
+	// "multiple definition of `foo'" the first time a real archive
+	// exercised this path. ExtraInputs exists precisely so
+	// "must be mounted" and "must appear in argv" can be asked
+	// independently for the same input.
+	ExtraInputs []derivInput
+
 	// Link + Compile: compiler flags. Archive uses ARFlags instead.
 	Flags []string
 
@@ -108,6 +134,26 @@ type Derivation struct {
 	// directly against openssl's libcrypto.so.3 — "Argument list too
 	// long").
 	InlineFilesStore string
+
+	// Link-only: an ABSOLUTE-path linker-script reference (as opposed
+	// to InlineFilesStore's relative-path case). meson (QEMU) bakes
+	// the build tree's own absolute path into a generated file's name
+	// at configure time — e.g. `-Xlinker
+	// --dynamic-list=/build/source/build/plugins/qemu-plugin.symbols`
+	// — so `cp -a "$src/." .` (InlineFilesStore's mechanism, which
+	// only reproduces paths RELATIVE to the link's own cwd) can't
+	// recreate it: the link derivation's sandbox has no
+	// "source/build/plugins/" subtree to copy into. Nix's own build
+	// sandbox always mounts the build root at a fixed "/build" for
+	// every derivation (confirmed directly — this is Nix's own
+	// convention, not something QEMU's build controls), so the
+	// generated file's content can just be written to that exact
+	// absolute path via a `mkdir -p`+heredoc fragment prepended to
+	// the script. Safe to embed literally (unlike InlineFilesStore's
+	// case): every real fixture that hits this is a small generated
+	// symbol-export list, not a large tree or hundreds of paths.
+	AbsFilePath    string
+	AbsFileContent string
 
 	// /nix/store/… roots referenced by Flags or WrapperEnv content;
 	// must be mounted in the sandbox. Serialized as _storeDeps env var
@@ -316,6 +362,21 @@ func (d *Derivation) inlineFilesScript() string {
 	return "cp -a \"$src/.\" .\n"
 }
 
+// absFileScript renders shell that recreates AbsFilePath (a linker-
+// referenced generated file whose name is an absolute build-tree
+// path — see AbsFilePath's own docstring) with AbsFileContent's exact
+// bytes, before the link command runs. `mkdir -p` on the dirname
+// handles the fact that this derivation's sandbox starts with none
+// of the caller's build-tree directory structure.
+func (d *Derivation) absFileScript() string {
+	if d.AbsFilePath == "" {
+		return ""
+	}
+	dir := d.AbsFilePath[:strings.LastIndexByte(d.AbsFilePath, '/')]
+	return fmt.Sprintf("mkdir -p %s\ncat > %s <<'NIXGG_ABS_FILE_EOF'\n%sNIXGG_ABS_FILE_EOF\n",
+		shellQuote(dir), shellQuote(d.AbsFilePath), d.AbsFileContent)
+}
+
 // compilerOrAR reports which store path provides the tools on PATH.
 // Compile and Link use the compiler; Archive uses whatever supplies
 // `ar` — which native mode passes as compilerRoot and sandbox mode as
@@ -404,15 +465,15 @@ cd "$src"
 				`set -euo pipefail
 %s
 mkdir -p "%s"
-%s"%s" %s %s -o "%s"
-`, pathPrefix, d.outDir(), d.inlineFilesScript(), d.Tool, shellQuoteFlags(d.Flags), inputList, d.outPath())
+%s%s"%s" %s %s -o "%s"
+`, pathPrefix, d.outDir(), d.absFileScript(), d.inlineFilesScript(), d.Tool, shellQuoteFlags(d.Flags), inputList, d.outPath())
 		}
 		return fmt.Sprintf(
 			`set -euo pipefail
 %s
 mkdir -p "%s"
-%s"%s" %s %s %s -o "%s"
-`, pathPrefix, d.outDir(), d.inlineFilesScript(), d.Tool, shellQuoteFlags(nonLflags), inputList, shellQuoteFlags(lflags), d.outPath())
+%s%s"%s" %s %s %s -o "%s"
+`, pathPrefix, d.outDir(), d.absFileScript(), d.inlineFilesScript(), d.Tool, shellQuoteFlags(nonLflags), inputList, shellQuoteFlags(lflags), d.outPath())
 	case KindArchive:
 		// `ar` is taken from PATH (set above) and `D` is prepended to
 		// arFlags for a deterministic archive.
@@ -458,6 +519,9 @@ func (d *Derivation) ToNix(helpers string) string {
 			fmt.Fprintf(&b, "  name           = %q;\n", d.Name)
 		}
 		fmt.Fprintf(&b, "  inputs         = %s;\n", derivInputsList(d.Inputs))
+		if len(d.ExtraInputs) > 0 {
+			fmt.Fprintf(&b, "  extraInputs    = %s;\n", derivInputsList(d.ExtraInputs))
+		}
 		fmt.Fprintf(&b, "  scriptTemplate = %s;\n", nixIndentedStringLiteral(tmpl))
 		fmt.Fprintf(&b, "  markerTag      = %q;\n", tag)
 		fmt.Fprintf(&b, "  storeDepsJSON  = ''%s'';\n", jsonArrayIndented(d.StoreDeps))
@@ -472,6 +536,9 @@ func (d *Derivation) ToNix(helpers string) string {
 			fmt.Fprintf(&b, "  name           = %q;\n", d.Name)
 		}
 		fmt.Fprintf(&b, "  inputs         = %s;\n", derivInputsList(d.Inputs))
+		if len(d.ExtraInputs) > 0 {
+			fmt.Fprintf(&b, "  extraInputs    = %s;\n", derivInputsList(d.ExtraInputs))
+		}
 		fmt.Fprintf(&b, "  scriptTemplate = %s;\n", nixIndentedStringLiteral(tmpl))
 		fmt.Fprintf(&b, "  markerTag      = %q;\n", tag)
 		fmt.Fprintf(&b, "  storeDepsJSON  = ''%s'';\n", jsonArrayIndented(d.StoreDeps))
@@ -552,7 +619,11 @@ func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 // caller passes extraSrcs (basenames of already-realised store paths
 // the sandbox must mount) and optional wrapper-env overrides via
 // WrapperEnv on the struct. Inputs are split into inputs.drvs (for
-// Kind=="nix") and inputs.srcs (for Kind=="store").
+// Kind=="nix") and inputs.srcs (for Kind=="store"). ExtraInputs are
+// folded into the SAME drvs/srcs maps — Nix mounts everything named
+// there regardless of whether the script text references it — but
+// (unlike Inputs) never appear in d.script()'s argv; see
+// Derivation.ExtraInputs' own docstring.
 func (d *Derivation) toJSON(extraSrcs []string, _reserved any) JSONDrv {
 	drvs := map[string]JSONDrvRef{}
 	srcs := append([]string{}, extraSrcs...)
@@ -560,7 +631,7 @@ func (d *Derivation) toJSON(extraSrcs []string, _reserved any) JSONDrv {
 	for _, s := range srcs {
 		seenSrc[s] = true
 	}
-	for _, in := range d.Inputs {
+	addInput := func(in derivInput) {
 		switch in.InputKind {
 		case "nix":
 			refKey := StoreBasename(in.Ref)
@@ -577,6 +648,12 @@ func (d *Derivation) toJSON(extraSrcs []string, _reserved any) JSONDrv {
 				seenSrc[base] = true
 			}
 		}
+	}
+	for _, in := range d.Inputs {
+		addInput(in)
+	}
+	for _, in := range d.ExtraInputs {
+		addInput(in)
 	}
 	for _, sd := range d.StoreDeps {
 		base := StoreBasename(sd)
@@ -613,6 +690,36 @@ func (d *Derivation) envDict() map[string]string {
 		"outputHashAlgo": "sha256",
 		"outputHashMode": "nar",
 		"_storeDeps":     strings.Join(d.StoreDeps, ":"),
+	}
+	// Link and Archive get an `_extraInputs` key unconditionally
+	// (empty string when there are none) — mirroring linker.nix/
+	// archiver.nix's own `_extraInputs = builtins.concatStringsSep
+	// ":" (...)`, which is likewise unconditional regardless of
+	// whether `extraInputs` was passed. Both sides must agree on
+	// whether this key EXISTS, not just on its value: an earlier
+	// version left it out of envDict entirely, so every Link/Archive
+	// derivation's JSON-mode env dict had one fewer key than its
+	// native-mode counterpart and the two hashed differently even
+	// with zero ExtraInputs.
+	switch d.Kind {
+	case KindLink, KindArchive:
+		parts := make([]string, 0, len(d.ExtraInputs))
+		for _, in := range d.ExtraInputs {
+			name := in.Name
+			if in.InputKind == "nix" {
+				if sub := inputSubdirFor(in.Name); sub != "" {
+					name = sub + "/" + name
+				}
+				parts = append(parts, caOutputPlaceholder(in.Ref, "out")+"/"+name)
+			} else {
+				ref := in.Ref
+				if !strings.HasPrefix(ref, "/nix/store/") {
+					ref = "/nix/store/" + ref
+				}
+				parts = append(parts, ref+"/"+name)
+			}
+		}
+		env["_extraInputs"] = strings.Join(parts, ":")
 	}
 	// Compile derivations pass source/outName/src via env vars too
 	// (that's what builder.nix's script consults — see the

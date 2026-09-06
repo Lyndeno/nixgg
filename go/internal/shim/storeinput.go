@@ -9,6 +9,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/batchpending"
 	"github.com/tbereknyei/nixgg/internal/classify"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/members"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
 	"github.com/tbereknyei/nixgg/internal/toolchain"
@@ -81,28 +82,97 @@ func storeInput(c classify.Result, callerPath string) (expr.Input, expr.JSONDrvI
 // any other caller of this function transparently falls back to
 // today's one-derivation-per-TU behavior for that one input, with
 // classify.Target none the wiser that the input was ever deferred.
+//
+// A Thunk/Drv-classified input that is itself a THIN archive (see
+// members.go's own docstring) additionally needs every ONE OF ITS OWN
+// members declared as a dependency of this derivation too — Nix only
+// mounts what a derivation's own inputs.drvs/inputs.srcs declare, and
+// a thin archive's on-disk bytes are just paths, not embedded
+// content, so nothing else would make those paths resolve inside a
+// LATER, separate consumer's sandbox. expandMembers does this lookup
+// (keyed identically to how archive.go wrote the sidecar for this
+// exact archive) and recurses into any member that is itself a thin
+// archive with its own sidecar — structurally necessary for a thin
+// archive nested inside another archive, though not exercised by any
+// current fixture (archive.go's own parseARArgs only ever accepts
+// `.o` members, so an archive's OWN recorded members are always
+// object files today, never another archive — the recursion is
+// forward-looking, not dead weight, since loosening that constraint
+// later shouldn't require touching this function again).
+//
+// Crucially, expandMembers' own appends go into the EXTRA slices, not
+// the primary linkInputs/jsonInputs the caller's own argv produced.
+// A thin archive's members are already referenced from inside its own
+// stored bytes (that's the entire point of `ar T` — see members.go's
+// docstring on why that stays safe under nixgg's per-derivation-
+// sandbox model); the LINK/AR step consuming that archive only needs
+// those members MOUNTED into its sandbox, never listed a second time
+// as literal argv tokens. Merging them into the rendered set produced
+// exactly that bug: `cc main.o libthin.a` where libthin.a already
+// contains path references to foo.o/bar.o, plus foo.o/bar.o appended
+// AGAIN as separate link-line arguments, made ld see each symbol
+// twice ("multiple definition of `foo'"). ExtraLink/ExtraJSON are
+// rendered into the derivation's own dependency declarations
+// (extraInputs in native mode, inputs.drvs/srcs in sandbox mode) but
+// never into the build script text — see Derivation.ExtraInputs'
+// docstring.
+//
+// Every append — the caller's own argv-derived entries AND anything
+// expandMembers adds — goes through the same dedup helpers, keyed on
+// Kind+Ref+Name, and sharing ONE seen-map per wire format across both
+// the primary and extra slices (so a member that's already an
+// explicit argv input on this same line isn't redundantly declared a
+// second time as a dependency-only extra). This matters even for
+// today's non-thin case in principle (the same input named twice on
+// one argv), but it becomes load-bearing here: the SAME member is
+// reachable through two different thin archives on one link line, and
+// native mode's derivInputsList renders its slice with no dedup of
+// its own (unlike sandbox mode's toJSON, which already deduplicates
+// via map/seenSrc) — an undeduplicated classifyInputs result would
+// make native and sandbox mode's rendered scripts diverge, exactly
+// the class of bug tests/drv-equivalence.sh exists to catch.
+type classifiedInputs struct {
+	Link      []expr.Input
+	ExtraLink []expr.Input
+	JSON      []expr.JSONDrvInput
+	ExtraJSON []expr.JSONDrvInput
+}
+
 func classifyInputs(
 	cfg *toolchain.Config, inputs []string, altPrefix string, l paths.Layout, logPrefix string, passthrough func() error,
-) (linkInputs []expr.Input, jsonInputs []expr.JSONDrvInput, err error, ok bool) {
-	linkInputs = make([]expr.Input, 0, len(inputs))
-	jsonInputs = make([]expr.JSONDrvInput, 0, len(inputs))
+) (ci classifiedInputs, err error, ok bool) {
+	ci.Link = make([]expr.Input, 0, len(inputs))
+	ci.JSON = make([]expr.JSONDrvInput, 0, len(inputs))
+	seenLink := map[string]bool{}
+	seenJSON := map[string]bool{}
+	archKeys := map[string]bool{}
 	for _, in := range inputs {
 		if batchpending.Is(in) {
 			if err := ResolvePendingMember(cfg, l, in); err != nil {
 				logf("%s passthrough: resolving deferred batch member %s: %v", logPrefix, in, err)
-				return nil, nil, passthrough(), false
+				return classifiedInputs{}, passthrough(), false
 			}
 		}
 		c := classify.Target(in, altPrefix, l)
 		switch c.Kind {
 		case classify.Store:
 			ni, ji := storeInput(c, in)
-			linkInputs = append(linkInputs, ni)
-			jsonInputs = append(jsonInputs, ji)
+			appendLinkDedup(&ci.Link, seenLink, ni)
+			appendJSONDedup(&ci.JSON, seenJSON, ji)
+			// c.ThunkID is only set for a promoted (force-realised)
+			// native-mode output — the one way a Store classification
+			// can still be one of OUR OWN archives rather than a
+			// foreign dependency reached through an ordinary store
+			// symlink. Key the sidecar lookup by that same thunk ID,
+			// matching how archive.go wrote it before promotion.
+			if c.ThunkID != "" {
+				expandMembers(l, c.ThunkID, &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
+			}
 		case classify.Thunk:
-			linkInputs = append(linkInputs, expr.Input{
+			appendLinkDedup(&ci.Link, seenLink, expr.Input{
 				Kind: "nix", Ref: c.Ref, Name: filepath.Base(in),
 			})
+			expandMembers(l, thunkKeyFromRef(c.Ref), &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
 		case classify.Drv:
 			// Sandbox-mode input: previous shim produced a .drv here.
 			// Only meaningful when we're also in sandbox mode.
@@ -119,15 +189,84 @@ func classifyInputs(
 			if c.Sub != "" {
 				name = c.Sub
 			}
-			jsonInputs = append(jsonInputs, expr.JSONDrvInput{
+			appendJSONDedup(&ci.JSON, seenJSON, expr.JSONDrvInput{
 				Kind: "drv", Ref: c.Ref, Name: name,
 			})
+			expandMembers(l, expr.StoreBasename(c.Ref), &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
 		default:
 			logf("%s passthrough: can't model input %s (%s)", logPrefix, in, c.Reason())
-			return nil, nil, passthrough(), false
+			return classifiedInputs{}, passthrough(), false
 		}
 	}
-	return linkInputs, jsonInputs, nil, true
+	return ci, nil, true
+}
+
+// expandMembers appends every member recorded in a thin archive's own
+// members.Write sidecar (if key has one at all — a guaranteed miss
+// for any non-thin archive, which never writes one) into extraLink/
+// extraJSON — dependency-only, never the rendered argv set; see this
+// function's caller for why. Recurses into any member that is itself
+// a thin archive with its own sidecar. archKeys guards against
+// re-expanding the same archive twice (redundant work, not a
+// correctness bug on its own) and against a cycle (a real bug, though
+// not one anything in this codebase can currently construct — ar
+// refuses to nest an archive inside another archive's own members at
+// all; see this function's caller for why).
+func expandMembers(
+	l paths.Layout, key string,
+	extraLink *[]expr.Input, extraJSON *[]expr.JSONDrvInput,
+	seenLink, seenJSON, archKeys map[string]bool,
+) {
+	if key == "" || archKeys[key] {
+		return
+	}
+	archKeys[key] = true
+	recs, ok, err := members.Read(l, key)
+	if err != nil || !ok {
+		return
+	}
+	for _, r := range recs {
+		switch r.Kind {
+		case "store", "nix":
+			appendLinkDedup(extraLink, seenLink, expr.Input{Kind: r.Kind, Ref: r.Ref, Name: r.Name})
+			if r.Kind == "nix" {
+				expandMembers(l, thunkKeyFromRef(r.Ref), extraLink, extraJSON, seenLink, seenJSON, archKeys)
+			}
+		case "src", "drv":
+			appendJSONDedup(extraJSON, seenJSON, expr.JSONDrvInput{Kind: r.Kind, Ref: r.Ref, Name: r.Name})
+			if r.Kind == "drv" {
+				expandMembers(l, expr.StoreBasename(r.Ref), extraLink, extraJSON, seenLink, seenJSON, archKeys)
+			}
+		}
+	}
+}
+
+// thunkKeyFromRef recovers the thunk.ID string a Thunk-classified
+// ref's own filename encodes — the same ID archive.go's native path
+// keys its members sidecar by (see archive.go: `members.Write(l,
+// string(id), ...)`).
+func thunkKeyFromRef(ref string) string {
+	return strings.TrimSuffix(filepath.Base(ref), ".nix")
+}
+
+// appendLinkDedup/appendJSONDedup append iff this exact (Kind, Ref,
+// Name) triple hasn't been added to this call's result yet.
+func appendLinkDedup(dst *[]expr.Input, seen map[string]bool, in expr.Input) {
+	key := in.Kind + "|" + in.Ref + "|" + in.Name
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	*dst = append(*dst, in)
+}
+
+func appendJSONDedup(dst *[]expr.JSONDrvInput, seen map[string]bool, in expr.JSONDrvInput) {
+	key := in.Kind + "|" + in.Ref + "|" + in.Name
+	if seen[key] {
+		return
+	}
+	seen[key] = true
+	*dst = append(*dst, in)
 }
 
 // maybeSubmit submits drvPath as one of the outer derivation's outputs
