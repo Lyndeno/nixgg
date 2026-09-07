@@ -47,9 +47,8 @@
   ncurses,
   zlib,
   pythonWithMesonDeps,
-  # batchGroups passthrough — same mkNixggBuild param every other
-  # fixture exposes; unset here (no qemu-batch flake entry exists),
-  # kept only so a future batching experiment doesn't need to add it.
+  # batchGroups passthrough — see flake.nix's qemu-batch entry, which
+  # batches libqemuutil.a's own 450 members.
   batchGroups ? [ ],
 }:
 

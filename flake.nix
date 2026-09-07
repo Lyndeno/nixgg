@@ -804,6 +804,58 @@
                 src = qemu-src;
               };
             };
+            # Same fixture, batchGroups covering libqemuutil.a's own
+            # 450 members (util/, stubs/, qobject/, qapi/, crypto/,
+            # trace/, plus meson's generated build/qapi/ and
+            # build/trace/ QAPI code) — the one archive, of QEMU's 5,
+            # that's actually worth batching (verified directly via
+            # .claude/skills/nixgg-drv-graph-breakdown's own drv-graph
+            # walk: libvhost-user.a/libvhost-user-glib.a/libvduse.a
+            # each have exactly 1 member, not worth it; the final
+            # link itself and libcommon.a/libqemu-x86_64-softmmu.a
+            # never go through `ar` at all — meson's own "extract
+            # objects" optimization passes their .o files to the link
+            # line directly, so there's no archive step there to
+            # batch in the first place).
+            #
+            # QEMU's own internal static libs are ALL built with
+            # `ar csrDT` (THIN) — meson applies the same link_args
+            # uniformly, so there's no way to pick "safe" (non-thin)
+            # patterns here the way every earlier *-batch entry could.
+            # This is the fixture that first exercised go/internal/
+            # expr/batcharchive.go's own thin-archive support (see
+            # batchArchiveScript's own docstring): a thin batch
+            # archive writes its member objects into $out/lib/
+            # .nixgg-objs/ (this derivation's own permanent store
+            # output) rather than a build-tmp scratch dir, so the
+            # resulting archive's self-references survive after the
+            # batch derivation's own build sandbox is torn down —
+            # confirmed via a real end-to-end test
+            # (TestBatchArchiveScriptThinArchiveSurvivesObjectDeletion)
+            # before this entry existed.
+            qemu-batch = {
+              dir = ./examples/qemu;
+              args = {
+                inherit (pkgs) pkg-config meson ninja glib pixman ncurses zlib;
+                pythonWithMesonDeps = pkgs.python3.withPackages (ps: [ ps.distlib ps.setuptools ]);
+                src = qemu-src;
+                batchGroups = [
+                  {
+                    name = "qemuutil";
+                    patterns = [
+                      "util/*.c"
+                      "stubs/*.c"
+                      "qobject/*.c"
+                      "qapi/*.c"
+                      "crypto/*.c"
+                      "trace/*.c"
+                      "build/qapi/*.c"
+                      "build/trace/*.c"
+                    ];
+                  }
+                ];
+              };
+            };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the
             # phase-chaining pattern examples/llvm relies on.

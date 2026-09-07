@@ -82,6 +82,51 @@ func TestBatchArchiveScriptToolAndPaths(t *testing.T) {
 	}
 }
 
+// TestBatchArchiveScriptThinUsesPermanentObjroot pins that a THIN
+// archive (`T` in arFlags) writes its member objects into the
+// archive's OWN store output ($out/lib/.nixgg-objs/) rather than a
+// build-tmp scratch dir. A thin archive stores each member's file
+// PATH, not its bytes (see internal/members' package docstring), so
+// those paths must survive after this derivation's own build sandbox
+// is torn down — confirmed via a real experiment that a thin archive
+// built from a tmp-relative $objroot breaks immediately once that
+// tmp is gone ("error opening thin archive member"), while one built
+// from $out/lib/.nixgg-objs/ (Nix rewrites the archive's own self-
+// reference to the final resolved store path) keeps working. This
+// makes a thin batch archive self-contained — no members sidecar
+// needed, unlike archive.go's own non-batched thin-archive path.
+func TestBatchArchiveScriptThinUsesPermanentObjroot(t *testing.T) {
+	script := batchArchiveScript("/COREUTILS", "/AR", "csrDT", "libfoo.a", testMembers())
+	if !strings.Contains(script, `mkdir -p "$out/lib/.nixgg-objs"`) {
+		t.Errorf("thin archive script missing permanent objroot mkdir:\n%s", script)
+	}
+	if !strings.Contains(script, `objroot="$out/lib/.nixgg-objs"`) {
+		t.Errorf("thin archive script missing permanent objroot assignment:\n%s", script)
+	}
+	if strings.Contains(script, `objroot="$PWD/.nixgg-objs"`) {
+		t.Errorf("thin archive script still uses the build-tmp scratch objroot:\n%s", script)
+	}
+}
+
+// TestBatchArchiveScriptNonThinKeepsScratchObjroot pins the
+// complement: every existing (non-thin) batch fixture must render
+// EXACTLY the same script as before this distinction existed — a
+// build-tmp scratch dir, not $out/lib/.nixgg-objs — since its members
+// are copied INTO the archive's own bytes by `ar` itself and nothing
+// needs to survive past this derivation's own build.
+func TestBatchArchiveScriptNonThinKeepsScratchObjroot(t *testing.T) {
+	script := batchArchiveScript("/COREUTILS", "/AR", "rcs", "libfoo.a", testMembers())
+	if !strings.Contains(script, `mkdir -p "$out/lib" .nixgg-objs`) {
+		t.Errorf("non-thin archive script missing the original scratch-dir mkdir:\n%s", script)
+	}
+	if !strings.Contains(script, `objroot="$PWD/.nixgg-objs"`) {
+		t.Errorf("non-thin archive script missing the original scratch objroot:\n%s", script)
+	}
+	if strings.Contains(script, `$out/lib/.nixgg-objs`) {
+		t.Errorf("non-thin archive script must not reference the permanent objroot path:\n%s", script)
+	}
+}
+
 // TestBatchArchiveScriptRunsConcurrently actually EXECUTES the
 // rendered script under real bash (substituting a fake "compiler"
 // that records its own start time), and confirms members run with
@@ -226,6 +271,92 @@ func TestBatchArchiveScriptPropagatesFailure(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("script succeeded despite a failing member — the failure was silently swallowed\noutput:\n%s\nscript:\n%s", out, full)
+	}
+}
+
+// TestBatchArchiveScriptThinArchiveSurvivesObjectDeletion actually
+// EXECUTES a rendered thin-archive script under real bash + real ar,
+// then deletes the SCRATCH directory the OLD (pre-fix) scheme would
+// have used (build-tmp-relative, sibling to the script's own cwd —
+// not $out) and confirms the resulting archive still resolves its
+// members from $out/lib/.nixgg-objs/, which survives because it was
+// never inside the deleted directory — pinning the real, end-to-end
+// property TestBatchArchiveScriptThinUsesPermanentObjroot only
+// checks at the script-text level. Uses a fake "compiler" that
+// copies a real byte pattern rather than compiling anything, since
+// what's under test is object PERSISTENCE, not compilation.
+func TestBatchArchiveScriptThinArchiveSurvivesObjectDeletion(t *testing.T) {
+	if _, err := exec.LookPath("ar"); err != nil {
+		t.Skip("ar not on PATH")
+	}
+
+	workDir := t.TempDir() // stands in for the build's own tmp — deleted below
+	outDir := t.TempDir()  // stands in for $out — a SEPARATE dir, survives
+
+	fakeCC := filepath.Join(workDir, "fakecc")
+	// Argv shape matches memberCompileLine: "$tool" ...flags... -c
+	// "$source" -o "$objroot/$outName" — the fake compiler ignores
+	// everything except the -o target, and writes deterministic
+	// bytes so the archive's own member content is checkable.
+	ccScript := "#!/bin/sh\n" +
+		`while [ "$#" -gt 0 ]; do` + "\n" +
+		`  if [ "$1" = "-o" ]; then out="$2"; fi` + "\n" +
+		`  shift` + "\n" +
+		"done\n" +
+		`printf 'OBJECT-BYTES' > "$out"` + "\n"
+	if err := os.WriteFile(fakeCC, []byte(ccScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := filepath.Join(workDir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	members := []BatchCompileMember{
+		{Tool: fakeCC, SrcStore: srcDir, Source: "a.c", OutName: "a.o"},
+	}
+
+	arPath, err := exec.LookPath("ar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nset -e\n" + batchArchiveScript("/usr", filepath.Dir(filepath.Dir(arPath)), "csrDT", "libfoo.a", members)
+
+	scriptPath := filepath.Join(workDir, "run.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Dir = workDir
+	cmd.Env = append(os.Environ(), "out="+outDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("script failed: %v\noutput:\n%s\nscript:\n%s", err, out, script)
+	}
+
+	archivePath := filepath.Join(outDir, "lib", "libfoo.a")
+	if _, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("archive not produced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "lib", ".nixgg-objs", "a.o")); err != nil {
+		t.Fatalf("member object not written under $out/lib/.nixgg-objs/: %v", err)
+	}
+
+	// Simulate the build sandbox being torn down: delete EVERYTHING
+	// outside $out. Only outDir must matter from here on.
+	if err := os.RemoveAll(workDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// ar p extracts a named member's own bytes — resolves the thin
+	// archive's stored path and reads through it, exactly what a
+	// later link step's `ld` would need to do.
+	out, err := exec.Command(arPath, "p", archivePath, "a.o").Output()
+	if err != nil {
+		t.Fatalf("ar p failed after workDir deletion — thin archive member did not survive: %v", err)
+	}
+	if string(out) != "OBJECT-BYTES" {
+		t.Errorf("member content = %q, want %q", out, "OBJECT-BYTES")
 	}
 }
 

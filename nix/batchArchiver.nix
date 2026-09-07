@@ -74,6 +74,32 @@ let
   objList = builtins.concatStringsSep " "
     (map (m: ''"$objroot/${m.outName}"'') members);
 
+  # $objroot's own location depends on arFlags: a THIN archive (`T`)
+  # stores each member's file PATH, not its bytes, so those paths
+  # must survive after THIS derivation's own build sandbox is torn
+  # down — a build-tmp scratch dir does not. Byte-identical to
+  # go/internal/expr/batcharchive.go's own batchArchiveScript — see
+  # its docstring for the full rationale (confirmed via a real CA
+  # derivation that thin-archives a sibling file inside its own
+  # $out: Nix rewrites the archive's self-reference to the final
+  # resolved store path, making it fully self-contained with no
+  # members-sidecar mechanism needed). A non-thin archive keeps the
+  # original scratch dir unchanged — its members are copied INTO the
+  # archive's own bytes by `ar` itself, so nothing needs to survive,
+  # and every existing (non-thin) batch fixture's pinned drv hash
+  # must not change.
+  isThin = builtins.match ".*T.*" arFlags != null;
+  objrootSetup =
+    if isThin
+    then ''
+      mkdir -p "$out/lib/.nixgg-objs"
+      objroot="$out/lib/.nixgg-objs"
+    ''
+    else ''
+      mkdir -p "$out/lib" .nixgg-objs
+      objroot="$PWD/.nixgg-objs"
+    '';
+
   # Byte-identical to go/internal/expr/batcharchive.go's own
   # batchConcurrencyPreamble/batchConcurrencyDrain constants — see
   # that file's own docstring for the full rationale. Copied verbatim
@@ -107,9 +133,7 @@ let
   script = ''
     set -euo pipefail
     export PATH="${coreutils}/bin:${compiler}/bin"
-    mkdir -p "$out/lib" .nixgg-objs
-    objroot="$PWD/.nixgg-objs"
-    ${concurrencyPreamble}${compileLines}${concurrencyDrain}ar D${arFlags} "$out/lib/${outName}" ${objList}
+    ${objrootSetup}${concurrencyPreamble}${compileLines}${concurrencyDrain}ar D${arFlags} "$out/lib/${outName}" ${objList}
   '';
 in
 derivation ({

@@ -220,10 +220,34 @@ func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 }
 
 // batchArchiveScript renders the combined shell script: N compiles
-// into a scratch objects dir, then one `ar` over all of them, in
-// member order. $objroot is captured before any `cd` so each
-// member's own -o target stays absolute regardless of which srcTree
-// directory that member's compile runs from.
+// into an objects dir, then one `ar` over all of them, in member
+// order. $objroot is captured before any `cd` so each member's own
+// -o target stays absolute regardless of which srcTree directory
+// that member's compile runs from.
+//
+// $objroot's own LOCATION depends on arFlags: a THIN archive (`T` in
+// arFlags) stores each member's file PATH rather than its bytes (see
+// internal/members' package docstring on the mechanism this exists
+// for elsewhere), so those paths must survive after THIS derivation's
+// own build sandbox is torn down — a plain build-tmp scratch dir does
+// not. Confirmed directly: a thin archive built from a tmp-relative
+// objroot broke immediately once that tmp was gone ("error opening
+// thin archive member: No such file or directory"), while one built
+// from $out/lib/.nixgg-objs/ (this derivation's own permanent store
+// output) kept working — Nix rewrites the archive's OWN self-
+// references to the final resolved store path, not a build-time
+// placeholder, confirmed via a real CA derivation that `ar --thin`s a
+// sibling file inside its own $out. This makes a thin batch archive
+// fully self-contained: the archive and its members live side by
+// side in ONE store output, so a later consumer just needs that one
+// output mounted — no members sidecar (archive.go's own non-batched
+// mechanism) is needed here at all.
+//
+// A non-thin archive keeps the original build-tmp scratch dir
+// unchanged (byte-identical to before this distinction existed): its
+// members are copied INTO the archive's own bytes by `ar` itself, so
+// nothing needs to survive after the build, and every existing batch
+// fixture's pinned output must not gain unrelated files it never had.
 //
 // Compiles run with bounded concurrency, capped at $NIX_BUILD_CORES
 // (falls back to 1 if unset/unparseable — never divides by zero,
@@ -249,11 +273,17 @@ func BatchArchiveJSON(p BatchArchiveJSONParams) JSONDrv {
 // compile times, which real same-language same-project TUs rarely
 // exhibit to a degree that matters.
 func batchArchiveScript(coreutils, ar, arFlags, archiveOutName string, members []BatchCompileMember) string {
+	thin := strings.ContainsRune(arFlags, 'T')
 	var b strings.Builder
 	fmt.Fprintf(&b, "set -euo pipefail\n")
 	fmt.Fprintf(&b, "export PATH=\"%s/bin:%s/bin\"\n", coreutils, ar)
-	b.WriteString("mkdir -p \"$out/lib\" .nixgg-objs\n")
-	b.WriteString("objroot=\"$PWD/.nixgg-objs\"\n")
+	if thin {
+		b.WriteString("mkdir -p \"$out/lib/.nixgg-objs\"\n")
+		b.WriteString("objroot=\"$out/lib/.nixgg-objs\"\n")
+	} else {
+		b.WriteString("mkdir -p \"$out/lib\" .nixgg-objs\n")
+		b.WriteString("objroot=\"$PWD/.nixgg-objs\"\n")
+	}
 	b.WriteString(batchConcurrencyPreamble)
 	for _, m := range members {
 		fmt.Fprintf(&b, "(cd \"%s\" && %s) &\n", m.SrcStore, memberCompileLine(m))
