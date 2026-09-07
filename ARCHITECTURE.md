@@ -207,12 +207,17 @@ nixgg/
 ├── tests/
 │   ├── drv-equivalence.sh      native ↔ sandbox drv-hash regression test
 │   ├── batch-drv-equivalence.sh  same, for the opt-in TU-batching Kind
+│   ├── thin-archive-equivalence.sh  same, for a THIN (`ar T`) archive
+│   ├── cross-mode-reuse.sh     proves a native-built drv is actually
+│   │                           SUBSTITUTED FOR by a later sandbox build
 │   ├── configure-cache-cutoff.sh / dyndrv-configure-cache-cutoff.sh
 │   │                           configure-time early-cutoff correctness
 │   │                           (native mode / dyn-drv mode)
 │   ├── perf-regression.sh     incremental-rebuild TU-count regression test
-│   ├── lib/                   shared helpers for the two drv-equivalence
-│   │                           scripts above
+│   ├── lib/                   shared helpers for the drv-equivalence-
+│   │                           family scripts above (see
+│   │                           equiv_sandbox_drvs's own docstring for
+│   │                           the sandbox-side collection mechanism)
 │   └── smoke.sh                every example builds, lands at its FHS
 │                               path, and runs (what the hash test can't see)
 └── go/internal/
@@ -553,6 +558,30 @@ see "What we don't (yet) do", now resolved below).
   makes dev-shell and pure-build derivations interchangeable — see
   "The invariant" above.
 
+  The sandbox side of that check doesn't snapshot the store. Building
+  ONLY the outer wrapper's own per-target outputs (`mkNixggBuild`'s
+  `drv."<target>.drv"`, never the `outputOf`-resolved `results`/
+  `packages`) triggers every shim registration with zero real
+  compilation — each shimmed cc/ar/link call registers a drv via
+  `nix derivation add` rather than invoking the real tool — and that
+  build's own result (the wrapper is `outputHashMode = "text"`) IS
+  the resolved target drv's own store path. Feeding every target's
+  printed path into one `nix derivation show -r` call then returns
+  the exact, already-deduplicated set of every TU/link/archive drv —
+  confirmed on `lua` (two outputs sharing one archive drv): 37 total
+  entries, the shared archive appearing exactly once. Toolchain deps
+  (bash/coreutils/gcc-wrapper) never appear in that output at all —
+  they're referenced via `inputs.srcs`, never `inputs.drvs`, so
+  `derivation show -r` has nothing to recurse into for them — which
+  means no filename filtering is needed on the sandbox side either,
+  unlike an earlier version of this check that snapshotted
+  `nix/store/` before/after a full build and inferred the real set
+  from a filename regex with several hand-tuned naming-convention
+  exceptions. `tests/lib/drv-equiv-common.sh`'s `equiv_sandbox_drvs`
+  is this mechanism's own shared implementation, used by
+  `drv-equivalence.sh`, `batch-drv-equivalence.sh`, and
+  `thin-archive-equivalence.sh` alike.
+
 ## What we don't (yet) do
 
 - ~~Warm-path drv memoization for sandbox mode~~ — **resolved**.
@@ -719,6 +748,79 @@ see "What we don't (yet) do", now resolved below).
   against the TU's absolute path with an unanchored search instead of
   assuming any relative path's position 0 is the project root — see
   `internal/batch.Classify`'s own docstring.
+
+- ~~Thin archives (`ar --thin`/`T`)~~ — **resolved**. A thin archive
+  stores each member's own file PATH instead of embedding its bytes —
+  a shape QEMU's meson build uses for every one of its internal
+  static libraries (`ar csrDT`). First analysis concluded this was
+  structurally impossible in nixgg's per-derivation-sandbox model (an
+  archive-creation derivation's build directory is torn down before a
+  later link derivation runs) — **that conclusion was wrong**: nixgg
+  already resolves every archive member to a permanent, immutable
+  `/nix/store/<hash>-name/...` path before invoking `ar` (confirmed
+  directly in `expr/derivation.go`'s own script template), so a thin
+  archive built from those same paths stays valid forever, from any
+  sandbox, as long as Nix's own derivation-input-declaration model
+  keeps the referenced path alive — which it already guarantees for
+  the lifetime of any build that declares it as an input. Verified
+  directly under `/tmp`: an absolute-path thin archive linked
+  successfully from a completely unrelated directory after the
+  archive-creation sandbox was deleted; a relative-path thin archive
+  (the real fragility) broke because GNU `ar` resolves relative
+  member paths against the archive file's *own location*, not cwd.
+
+  The actual missing piece: `isARModifiers` didn't accept `T` at all
+  (falling every such `ar` call to unaccelerated `Passthrough`), and
+  when a LATER derivation (typically a link) consumes a thin archive,
+  it must also declare that archive's own members as direct inputs —
+  Nix only mounts what a derivation's own `inputs.drvs`/`inputs.srcs`
+  declare, and a thin archive's on-disk bytes are just paths, not
+  embedded content. `go/internal/members` is the new sidecar package
+  (written only when `T` is in the modifiers, keyed the same way
+  `archive.go`'s own thunk-ID/drv-path already is) recording an
+  archive's resolved member list; `classifyInputs` (the one function
+  both `archive.go` and `link.go` already call) looks it up and
+  recursively propagates every member into the consuming derivation's
+  own dependency declarations.
+
+  Those propagated members are dependency-only — `Derivation.
+  ExtraInputs`, mounted into the sandbox exactly like an ordinary
+  input but never rendered into the actual `cc`/`ar` command line. An
+  earlier version merged them straight into the rendered input list
+  and immediately broke: the members are already reachable from
+  inside the thin archive's own bytes, so listing them a second time
+  on the link line made the linker see each symbol twice ("multiple
+  definition of `foo'"). `ExtraInputs` flows through the exact same
+  `derivInputsList`/`toJSON` code paths ordinary `Inputs` already use
+  (so both wire formats declare the dependency edge identically) but
+  is excluded from `buildScript`'s own rendered argv — the one
+  deliberate asymmetry, and the reason a members lookup is dependency
+  declaration only, never a second occurrence of an already-archived
+  object.
+
+  Batching interacts with this too: `go/internal/expr/batcharchive.go`'s
+  combined compile+archive derivation used to write every member's
+  object into a build-tmp scratch directory, torn down with the rest
+  of that derivation's sandbox once its build finished — fine for an
+  ordinary (fat) archive, whose members are copied INTO its own bytes
+  by `ar`, but fatal for a thin one, whose stored paths need to
+  survive past that teardown. Confirmed directly: a thin archive
+  built from a tmp-relative scratch dir broke immediately once that
+  tmp was deleted. Fixed by writing a thin batch archive's own
+  members to `$out/lib/.nixgg-objs/` — this derivation's OWN
+  permanent store output — instead: Nix rewrites the archive's self-
+  reference to the final resolved store path (confirmed via a real CA
+  derivation that thin-archives a sibling file inside its own `$out`
+  and successfully links against it after the CREATING derivation's
+  sandbox no longer exists), making the result fully self-contained
+  with no separate members sidecar needed for the batched case at
+  all. `qemu-batch` (libqemuutil.a, 450 members, `ar csrDT`) is the
+  real fixture exercising this: 1383 → 933 total drvs, verified
+  producing a working `qemu-system-x86_64` binary.
+
+  `tests/thin-archive-equivalence.sh` is this whole mechanism's own
+  dedicated native/sandbox drv-equivalence check, on a minimal 3-file
+  fixture (`examples/thin-archive`) rather than QEMU's real scale.
 
 - ~~Multi-target dyn-drv builds~~ — **resolved**. `mkNixggBuild`
   used to submit exactly one final drv; a project with multiple
