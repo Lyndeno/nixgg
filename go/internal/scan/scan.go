@@ -239,6 +239,34 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 	}
 	tokens := parseMakeDeps(out)
 
+	// Assembly sources (.s/.S) can reference arbitrary build-tree files
+	// via GNU as's `.incbin "path"` directive — Linux Kbuild's own
+	// arch/x86/realmode/rmpiggy.S does exactly this, embedding a
+	// previously-linked binary blob into a later object file. `.incbin`
+	// is processed by the ASSEMBLER, after preprocessing, so gcc's own
+	// `-M`/`-MM` (which only tracks what the PREPROCESSOR consumed —
+	// #include, not .incbin) never sees it: confirmed directly, `cc -M
+	// -MG` on a .S with an .incbin produces a dependency list that
+	// silently omits the incbin'd file entirely, no warning either way.
+	//
+	// The assembler itself DOES track this, via its own, separate
+	// `--MD=<path>` flag (binutils `as`'s own dependency-output option,
+	// unrelated to gcc's `-M` family) — confirmed directly against a
+	// real fixdep-adjacent case: `gcc -c foo.S -Wa,--MD=/dev/stdout -o
+	// /dev/null` lists the .incbin target in its dependency output
+	// alongside the source itself. Real compile (not just a probe): -o
+	// /dev/null and dep output to /dev/stdout both avoid leaving files
+	// behind, at the cost of a second real compile per assembly TU (a
+	// scan.go cache hit, same as the -M/-MG pass, avoids paying this on
+	// every rebuild).
+	if isAssemblySource(source) {
+		incTokens, err := scanIncbinTargets(cc, source, scanFlags)
+		if err != nil {
+			return nil, nil, err
+		}
+		tokens = append(tokens, incTokens...)
+	}
+
 	// Resolve each token: absolute path, or search cwd + user -I dirs.
 	// Widen projectRoot to cover any dep found outside its current span.
 	var resolved []string
@@ -322,10 +350,10 @@ func runScanner(cc, source string, flags []string) (*Result, []depEntry, error) 
 	}
 
 	return &Result{
-		Headers:      headers,
-		ProjectRoot:  projectRoot,
-		StagedIFlags: iflags,
-		StoreIFlags:  storeFlags,
+		Headers:            headers,
+		ProjectRoot:        projectRoot,
+		StagedIFlags:       iflags,
+		StoreIFlags:        storeFlags,
 		StagedIncludeFlags: includeFlags,
 	}, deps, nil
 }
@@ -451,6 +479,44 @@ func stripDepFlags(flags []string) []string {
 	return out
 }
 
+// isAssemblySource matches the .s/.S extensions the compile shim's own
+// isSource (go/internal/shim/compile.go) treats as assembly — kept as
+// a separate, narrower check here rather than importing that package,
+// since scan must not depend on shim (shim already depends on scan).
+func isAssemblySource(source string) bool {
+	ext := filepath.Ext(source)
+	return ext == ".s" || ext == ".S"
+}
+
+// scanIncbinTargets runs a REAL compile of an assembly source with
+// `-Wa,--MD=<path>` (binutils as's own dependency-output flag, passed
+// through by gcc's driver the same way any other `-Wa,` option is) to
+// discover any `.incbin "path"` targets, returning them as raw
+// (unresolved) tokens in the same shape parseMakeDeps produces — the
+// caller resolves them identically to ordinary header tokens.
+//
+// A REAL compile, not a probe: unlike gcc's `-M -MG`, `as` has no
+// "-MG-equivalent" tolerant mode that accepts a missing dependency as
+// a bare name — an .incbin target that doesn't exist on disk is a
+// real assembler error either way, so there is no tolerant-scan
+// option to prefer here. -o /dev/null discards the object; the
+// caller's own real compile (deferred to a derivation, same as any
+// other TU) produces the object that actually matters.
+func scanIncbinTargets(cc, source string, flags []string) ([]string, error) {
+	args := append([]string{"-c", source, "-o", "/dev/null", "-Wa,--MD=/dev/stdout"}, flags...)
+	cmd := exec.Command(cc, args...)
+	cmd.Stderr = nil
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		return nil, fmt.Errorf("scan-incbin %s %s: %w\n%s", cc, source, err, stderr)
+	}
+	return parseMakeDeps(out), nil
+}
+
 func parseMakeDeps(out []byte) []string {
 	// Join line-continuations first.
 	var buf bytes.Buffer
@@ -543,10 +609,10 @@ func isPrefixOfPath(root, path string) bool {
 // the fs walk. We use a compact newline-delimited format instead of
 // JSON to keep parse cost low.
 //
-//   line 0:   PROJECT_ROOT=<path>
-//   line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
-//   line ..:  STORE_IFLAG=<flag>   (repeated)
-//   line ..:  HEADER=<abs>\t<rel>  (repeated)
+//	line 0:   PROJECT_ROOT=<path>
+//	line 1..: STAGED_IFLAG=<flag>  (repeated, order preserved)
+//	line ..:  STORE_IFLAG=<flag>   (repeated)
+//	line ..:  HEADER=<abs>\t<rel>  (repeated)
 func encodeResult(r *Result) ([]byte, error) {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "PROJECT_ROOT=%s\n", r.ProjectRoot)

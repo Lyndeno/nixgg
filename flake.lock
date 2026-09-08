@@ -104,6 +104,19 @@
         "type": "github"
       }
     },
+    "linux-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1731881708,
+        "narHash": "sha256-49t94CaLdkxrmxG9Wie+p1wk6VNhraawR0vOjoFR3bY=",
+        "type": "tarball",
+        "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz"
+      }
+    },
     "llvm-src": {
       "flake": false,
       "locked": {
@@ -282,6 +295,7 @@
         "ffmpeg-src": "ffmpeg-src",
         "fmt-src": "fmt-src",
         "gcc-src": "gcc-src",
+        "linux-src": "linux-src",
         "llvm-src": "llvm-src",
         "lua-src": "lua-src",
         "mosh-src": "mosh-src",

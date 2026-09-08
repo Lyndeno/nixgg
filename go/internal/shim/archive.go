@@ -35,9 +35,17 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 		// whose modifier string we don't model. Both are fine to pass
 		// through — but silence here means a build that accelerated
 		// nothing looks exactly like one that accelerated everything.
+		//
+		// RealiseThunkArgsAndPassthrough (not a bare Passthrough):
+		// realizes any argv token that's still one of OUR OWN
+		// not-yet-realized thunks before the real `ar` reads it —
+		// see that function's own docstring for why (Linux Kbuild's
+		// own cmd_ar_vmlinux.a hits this directly: `ar t vmlinux.a`
+		// reads a thin archive this same shim just created moments
+		// earlier, in the same recipe).
 		logf("ar passthrough: not an archive-creating invocation (%s)", joinBase(args))
 		activitylog.Emit("ar", "passthrough", activitylog.Fields{"reason": "not_archive_creating", "argv": args})
-		return Passthrough(realARFor(cfg), args)
+		return RealiseThunkArgsAndPassthrough(cfg, l, realARFor(cfg), args, sandbox.Enabled())
 	}
 
 	logf("archive %s <- %s", archive, joinBase(inputs))
@@ -48,7 +56,20 @@ func Archive(args []string, cfg *toolchain.Config, l paths.Layout) error {
 
 	altPrefix := altStorePrefix(cfg.Store)
 	ci, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "ar", func() error {
-		return Passthrough(realARFor(cfg), args)
+		// classifyInputs' own passthrough callback: ONE sibling input
+		// couldn't be classified, so the WHOLE call falls back. The
+		// other, already-classified siblings may still be real nixgg
+		// thunks — realize them first, same reasoning as the !ok
+		// branch above. This is the exact path a real kernel build
+		// hits: Kbuild's own `ar cDPrST built-in.a <14 real nixgg
+		// thunks> <1 genuinely empty, already-real sibling
+		// archive>` — the empty sibling can't classify, so
+		// classifyInputs gives up on the WHOLE call, and thin mode's
+		// own "store the path, don't read the content" semantics mean
+		// the real `ar` would otherwise succeed anyway, silently
+		// writing the 14 real thunks' own `.nixgg/thunks/*.nix` paths
+		// into the resulting archive as if they were real members.
+		return RealiseThunkArgsAndPassthrough(cfg, l, realARFor(cfg), args, sandbox.Enabled())
 	})
 	if !ok {
 		return err
@@ -157,13 +178,58 @@ func parseARArgs(args []string) (modifiers, archive string, inputs []string, ok 
 	}
 	archive = args[1]
 	for _, in := range args[2:] {
-		if !strings.HasSuffix(in, ".o") {
-			// Non-.o input to ar — skip modeling.
+		if !strings.HasSuffix(in, ".o") && !strings.HasSuffix(in, ".a") {
+			// Anything else (a .lo, a response file, a positional
+			// count) means we can't model the member list; bail
+			// entirely rather than silently dropping it.
 			return "", "", nil, false
 		}
 		inputs = append(inputs, in)
 	}
-	if archive == "" || len(inputs) == 0 {
+	// A zero-member archive (`ar cDPrST archive.a` with nothing after
+	// the archive name) IS modeled, not bailed on, but ONLY for the
+	// two modifiers that actually construct/replace content (`r`,
+	// `q`) — Linux Kbuild issues exactly `ar cDPrST archive.a` (r
+	// present) for every disabled-subsystem directory (`obj-y` empty
+	// because the subsystem's own CONFIG_* is off). `t`/`p`/`x`/`m`
+	// (list/print/extract/move) legitimately take ZERO trailing
+	// members too, meaning "operate on every existing member" — those
+	// must still bail to Passthrough; a zero-length inputs slice there
+	// is not "an empty archive," it is "no member filter given."
+	//
+	// Every downstream layer (expr.Archive/Derivation.ToNix, pinned by
+	// TestScriptGolden's "archive, no inputs" case; archiveSandbox)
+	// already renders a valid empty-inputs derivation.
+	//
+	// history: a first attempt at this landed, then got reverted,
+	// because letting it through surfaced Kbuild's OWN `cmd_ar_vmlinux.a`
+	// recipe running `ar mPiT <member> vmlinux.a <members>` — a SECOND
+	// synchronous `ar t` read of a just-registered thin archive that
+	// parseARArgs' positional-argument blindness (see
+	// TestParseARArgsPositionalCountIsMisparsed) misparses once `ar t`'s
+	// own `-P` full-path output makes the first captured token an
+	// absolute store path, breaking native mode ("file exists": tries
+	// to symlink a placeholder on top of an already-realized path).
+	// That recipe is NOW overridden at the examples/linux-kernel
+	// fixture's own call site (`cmd_ar_vmlinux.a=...`, skipping the
+	// `ar mPiT` reorder entirely — verified safe: scripts/
+	// head-object-list.txt, what that reorder exists to serve, has ZERO
+	// x86 entries, so the reorder is a no-op on this fixture's own arch
+	// regardless), so the misparse this caused is no longer reachable.
+	// Re-enabling this case with that fixture-side fix in place is what
+	// gets Kbuild's disabled-subsystem archives to stay inside nixgg's
+	// own graph instead of degrading to foreign Passthrough'd files —
+	// which is what lets the WHOLE build (through vmlinux.a's own
+	// assembly) resolve without any later ancestor misclassifying a
+	// disabled subsystem's own archive as Regular.
+	if archive == "" {
+		return "", "", nil, false
+	}
+	if len(inputs) == 0 && !strings.ContainsAny(modifiers, "rq") {
+		// t/p/x/m with no trailing members means "operate on every
+		// existing member" — not an archive-creating invocation at
+		// all, so this must fall to the caller's own !ok branch
+		// (RealiseThunkArgsAndPassthrough), same as before.
 		return "", "", nil, false
 	}
 	return modifiers, archive, inputs, true

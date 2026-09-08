@@ -12,6 +12,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/dispatch"
 	"github.com/tbereknyei/nixgg/internal/drvref"
 	"github.com/tbereknyei/nixgg/internal/expr"
+	"github.com/tbereknyei/nixgg/internal/mode"
 	"github.com/tbereknyei/nixgg/internal/paths"
 	"github.com/tbereknyei/nixgg/internal/realise"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
@@ -50,11 +51,19 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 		}
 	}
 
-	output, inputs, flags, group, ok := parseLinkArgs(args)
+	var wholeArchiveInputs []string
+	output, inputs, flags, group, ok := parseLinkArgsWholeArchive(args, &wholeArchiveInputs)
 	if !ok {
 		logf("link passthrough: unparseable link line (%s)", joinBase(args))
 		activitylog.Emit("link", "passthrough", activitylog.Fields{"reason": "unparseable", "argv": args})
-		return Passthrough(realTool, args)
+		// RealiseThunkArgsAndPassthrough, not a bare Passthrough: an
+		// unparseable link line may still name real nixgg thunk
+		// siblings among its inputs (e.g. a link this shim can't
+		// classify as a link at all, alongside inputs that ARE our
+		// own not-yet-realized outputs) — see archive.go's identical
+		// reasoning and RealiseThunkArgsAndPassthrough's own
+		// docstring.
+		return RealiseThunkArgsAndPassthrough(cfg, l, realTool, args, sandbox.Enabled())
 	}
 
 	logf("link %s <- %s", output, joinBase(inputs))
@@ -133,7 +142,14 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 	// Classify each input.
 	altPrefix := altStorePrefix(cfg.Store)
 	ci, err, ok := classifyInputs(cfg, inputs, altPrefix, l, "link", func() error {
-		return Passthrough(realTool, args)
+		// One sibling input couldn't be classified, so the WHOLE link
+		// falls back to the real, unshimmed linker — but the OTHER,
+		// already-classified inputs may still be real nixgg thunks.
+		// Realize them first; see archive.go's identical reasoning
+		// and RealiseThunkArgsAndPassthrough's own docstring for the
+		// concrete failure this prevents (a real `ld` reading a
+		// placeholder thunk symlink as if it were an object file).
+		return RealiseThunkArgsAndPassthrough(cfg, l, realTool, args, sandbox.Enabled())
 	})
 	if !ok {
 		return err
@@ -147,7 +163,7 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 
 	// Sandbox mode: emit JSON, submit as this outer derivation's output.
 	if sandbox.Enabled() {
-		return linkSandbox(cfg, tool, output, ci.JSON, ci.ExtraJSON, flags, group, inlineFilesStore, absFilePath, absFileContent, storeDeps, wrapperEnvJSON)
+		return linkSandbox(cfg, tool, output, ci.JSON, ci.ExtraJSON, flags, group, wholeArchiveInputs, inlineFilesStore, absFilePath, absFileContent, storeDeps, wrapperEnvJSON)
 	}
 
 	wrapperEnv, err := decodeStringMap(wrapperEnvJSON)
@@ -155,20 +171,36 @@ func Link(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.Layo
 		return err
 	}
 	e := expr.Link(expr.LinkParams{
-		Helpers:          cfg.Helpers,
-		Name:             multiTargetName(output),
-		Tool:             tool.Basename(),
-		OutName:          filepath.Base(output),
-		Inputs:           ci.Link,
-		ExtraInputs:      ci.ExtraLink,
-		Flags:            flags,
-		GroupInputs:      group,
-		InlineFilesStore: inlineFilesStore,
-		AbsFilePath:      absFilePath,
-		AbsFileContent:   absFileContent,
-		StoreDeps:        storeDeps,
-		WrapperEnv:       wrapperEnv,
+		Helpers:            cfg.Helpers,
+		Name:               multiTargetName(output),
+		Tool:               tool.Basename(),
+		OutName:            filepath.Base(output),
+		Inputs:             ci.Link,
+		ExtraInputs:        ci.ExtraLink,
+		Flags:              flags,
+		GroupInputs:        group,
+		WholeArchiveInputs: wholeArchiveInputs,
+		InlineFilesStore:   inlineFilesStore,
+		AbsFilePath:        absFilePath,
+		AbsFileContent:     absFileContent,
+		StoreDeps:          storeDeps,
+		WrapperEnv:         wrapperEnv,
 	})
+
+	// mode.ForLink: a narrow carveout for link outputs an UNSHIMMED
+	// tool reads back synchronously in the same recursive make (Linux
+	// Kbuild's arch/x86/tools/relocs on realmode.elf — see mode.go's
+	// own docstring). realiseAndLink builds synchronously via `nix
+	// build --file` and re-targets output at real store bytes, same
+	// as compile.go's identical carveout for conftests/cmake probes.
+	// "bin" here, not a guess from output's name: every KindLink
+	// output lands under bin/ (see expr.Derivation.outSubdir), whether
+	// or not its own name happens to end in ".o" (Kbuild's vmlinux.o
+	// is a LINK output, not a compile one — see realiseAndLink's own
+	// docstring for the bug this fixed).
+	if mode.ForLink(output) == mode.Realise {
+		return realiseAndLink(e, output, "bin", cfg, l)
+	}
 
 	// Links are placeholder-mode by default: the resulting binary isn't
 	// usually consumed inside the same make invocation. `nixgg force
@@ -225,8 +257,36 @@ func isGroupBracket(a string) bool {
 	return false
 }
 
+// isWholeArchiveStart/isWholeArchiveEnd report whether a token opens
+// or closes a --whole-archive span. Unlike isGroupBracket's single
+// global group (safe to widen to cover every input — see GroupInputs'
+// own docstring), --whole-archive's span is NOT safe to widen: it
+// changes archive MEMBER SELECTION (force every member in, vs. only
+// members something else references), so it must track exactly which
+// inputs the caller's own line put inside it — see
+// WholeArchiveInputs' own docstring, and Kbuild's own vmlinux.o link
+// for the real recipe this was written against.
+func isWholeArchiveStart(a string) bool {
+	return a == "-Wl,--whole-archive" || a == "--whole-archive"
+}
+
+func isWholeArchiveEnd(a string) bool {
+	return a == "-Wl,--no-whole-archive" || a == "--no-whole-archive"
+}
+
 func parseLinkArgs(args []string) (output string, inputs, flags []string, group, ok bool) {
+	return parseLinkArgsWholeArchive(args, nil)
+}
+
+// parseLinkArgsWholeArchive is parseLinkArgs' real implementation,
+// also returning the WholeArchiveInputs subset (see the Derivation
+// field of the same name). Split out so parseLinkArgs' own signature
+// — used at every existing call site — stays unchanged; only the one
+// caller that needs to plumb WholeArchiveInputs through to expr.Link/
+// LinkJSON calls this directly.
+func parseLinkArgsWholeArchive(args []string, wholeArchive *[]string) (output string, inputs, flags []string, group, ok bool) {
 	var libDirs []string
+	inWholeArchive := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -238,6 +298,27 @@ func parseLinkArgs(args []string) (output string, inputs, flags []string, group,
 			i++
 		case strings.HasPrefix(a, "-o") && len(a) > 2:
 			output = a[2:]
+		// `-soname <name>` (raw ld's separated form; gcc-driver
+		// callers spell it -Wl,-soname,<name>, already inert since
+		// that whole token fails isLinkInput's leading-dash check).
+		// <name> is metadata for the ELF DT_SONAME field, not a link
+		// input — but it commonly LOOKS like one: Kbuild's vdso32
+		// build passes `-soname linux-gate.so.1`, and isSharedLib's
+		// own `.so.N` version-suffix match (deliberately generous, to
+		// catch real positional `libfoo.so.1.2.3` inputs) means the
+		// bare value would otherwise be misclassified as a shared-
+		// library INPUT rather than skipped as a flag's argument —
+		// confirmed directly: without this case, the whole vdso32.so.dbg
+		// link fell to Passthrough because classifyInputs correctly
+		// reported "linux-gate.so.1" as absent (it names nothing on
+		// disk at all).
+		case a == "-soname":
+			if i+1 < len(args) {
+				flags = append(flags, a, args[i+1])
+				i++
+			} else {
+				flags = append(flags, a)
+			}
 		// Group brackets are positional: they bracket the inputs
 		// BETWEEN them, and our reassembly emits all flags before all
 		// inputs, which would leave the pair spanning nothing. Record
@@ -247,8 +328,19 @@ func parseLinkArgs(args []string) (output string, inputs, flags []string, group,
 		// preserving the exact original span is not expressible.
 		case isGroupBracket(a):
 			group = true
+		// --whole-archive is ALSO positional, but unlike the group
+		// brackets above its span cannot be widened (see
+		// isWholeArchiveStart's own docstring) — track exactly which
+		// inputs fall inside it instead.
+		case isWholeArchiveStart(a):
+			inWholeArchive = true
+		case isWholeArchiveEnd(a):
+			inWholeArchive = false
 		case isLinkInput(a):
 			inputs = append(inputs, a)
+			if inWholeArchive && wholeArchive != nil {
+				*wholeArchive = append(*wholeArchive, filepath.Base(a))
+			}
 		case strings.HasPrefix(a, "-L") && len(a) > 2:
 			libDirs = append(libDirs, a[2:])
 			flags = append(flags, a)
@@ -261,6 +353,9 @@ func parseLinkArgs(args []string) (output string, inputs, flags []string, group,
 		case strings.HasPrefix(a, "-l") && len(a) > 2:
 			if hit := resolveLibFlag(a[2:], libDirs); hit != "" {
 				inputs = append(inputs, hit)
+				if inWholeArchive && wholeArchive != nil {
+					*wholeArchive = append(*wholeArchive, filepath.Base(hit))
+				}
 			} else {
 				flags = append(flags, a)
 			}
@@ -310,6 +405,18 @@ func parseLinkArgs(args []string) (output string, inputs, flags []string, group,
 //     emits `-Xlinker --dynamic-list=<path>` this way rather than
 //     `-Wl,--dynamic-list=<path>` — confirmed directly against a
 //     real QEMU 9.2.0 x86_64-softmmu build's own link line.
+//   - bare `--script=<path>` — ld's own long-form spelling (no
+//     `-Wl,`/`-Xlinker` wrapper at all), used when a raw `ld` is
+//     invoked directly rather than through a compiler driver. Linux
+//     Kbuild's own scripts/link-vmlinux.sh sets `wl=""` for every
+//     arch but um (there it's `-Wl,`, since um links via $(CC)) and
+//     emits `${wl}--script=${objtree}/${KBUILD_LDS}` — confirmed
+//     directly: without this case, vmlinux's own final link fell
+//     through mode.ForLink's realise carveout with the linker script
+//     never staged, and ld failed "cannot open linker script file
+//     ./arch/x86/kernel/vmlinux.lds: No such file or directory" (that
+//     relative path exists in the caller's own build tree, but the
+//     link derivation's sandbox never saw it without staging).
 //
 // Excludes `-Ttext=`/`-Tdata=`/`-Tbss=` — same `-T` prefix, but an
 // address override, not a script path.
@@ -325,6 +432,9 @@ func linkerScriptPath(args []string) string {
 		if v, ok := strings.CutPrefix(a, "--dynamic-list="); ok {
 			return v, true
 		}
+		if v, ok := strings.CutPrefix(a, "--script="); ok {
+			return v, true
+		}
 		return "", false
 	}
 	for i, a := range args {
@@ -335,6 +445,8 @@ func linkerScriptPath(args []string) string {
 			return strings.TrimPrefix(a, "-Wl,--dynamic-list=")
 		case strings.HasPrefix(a, "-Wl,-T,"):
 			return strings.TrimPrefix(a, "-Wl,-T,")
+		case strings.HasPrefix(a, "-Wl,--script="):
+			return strings.TrimPrefix(a, "-Wl,--script=")
 		case a == "-Xlinker" && i+1 < len(args):
 			if v, ok := bareFlagValue(args[i+1]); ok {
 				return v
@@ -344,6 +456,10 @@ func linkerScriptPath(args []string) string {
 		case strings.HasPrefix(a, "-T") && len(a) > 2 &&
 			!strings.HasPrefix(a, "-Ttext=") && !strings.HasPrefix(a, "-Tdata=") && !strings.HasPrefix(a, "-Tbss="):
 			return a[2:]
+		default:
+			if v, ok := bareFlagValue(a); ok {
+				return v
+			}
 		}
 	}
 	return ""
@@ -537,6 +653,7 @@ func linkSandbox(
 	extraInputs []expr.JSONDrvInput,
 	flags []string,
 	group bool,
+	wholeArchiveInputs []string,
 	inlineFilesStore string,
 	absFilePath string,
 	absFileContent string,
@@ -561,24 +678,25 @@ func linkSandbox(
 		name = override
 	}
 	drv := expr.LinkJSON(expr.LinkJSONParams{
-		Name:             name,
-		OutName:          outName,
-		System:           cfg.System,
-		Bash:             cfg.BashRoot,
-		Coreutils:        cfg.CoreutilsRoot,
-		Compiler:         cfg.CompilerRoot,
-		Tool:             tool.Basename(),
-		Inputs:           inputs,
-		ExtraInputs:      extraInputs,
-		Flags:            flags,
-		GroupInputs:      group,
-		InlineFilesStore: inlineFilesStore,
-		AbsFilePath:      absFilePath,
-		AbsFileContent:   absFileContent,
-		StoreDeps:        storeDeps,
-		Placeholder:      "/" + expr.OutPlaceholderNix32,
-		ExtraSrcs:        extraSrcs,
-		Env:              wrapperEnv,
+		Name:               name,
+		OutName:            outName,
+		System:             cfg.System,
+		Bash:               cfg.BashRoot,
+		Coreutils:          cfg.CoreutilsRoot,
+		Compiler:           cfg.CompilerRoot,
+		Tool:               tool.Basename(),
+		Inputs:             inputs,
+		ExtraInputs:        extraInputs,
+		Flags:              flags,
+		GroupInputs:        group,
+		WholeArchiveInputs: wholeArchiveInputs,
+		InlineFilesStore:   inlineFilesStore,
+		AbsFilePath:        absFilePath,
+		AbsFileContent:     absFileContent,
+		StoreDeps:          storeDeps,
+		Placeholder:        "/" + expr.OutPlaceholderNix32,
+		ExtraSrcs:          extraSrcs,
+		Env:                wrapperEnv,
 	})
 
 	drvPath, err := sandbox.DerivationAdd(cfg, drv)
@@ -601,6 +719,21 @@ func linkSandbox(
 
 // matchesTarget returns true if `target` (which may be a basename,
 // a relative path, or an absolute path) refers to `output`.
+//
+// The basename fallback ONLY fires when target itself has no
+// directory component — i.e. the caller declared a bare name and
+// expects it to match wherever the real build put it (every existing
+// fixture's own single-target case: "mosh-server", "libfmt.a", …).
+// If target itself is a relative/absolute PATH (contains a "/"),
+// matching drops to exact/absolute comparison only — confirmed
+// necessary directly: Linux Kbuild's own recursive build produces
+// MANY archives sharing a basename ("lib.a" at both lib/lib.a and
+// arch/x86/lib/lib.a; "built-in.a" at dozens of directories). A path-
+// aware target ("lib/lib.a") that still fell through to basename
+// comparison would ALSO match "arch/x86/lib/lib.a"'s own call —
+// `filepath.Base` strips every directory component, not just "target
+// has none" — and maybeSubmit would try to SubmitOutput the SAME
+// output key twice, for two different (and only one correct) drvs.
 func matchesTarget(target, output string) bool {
 	if target == output {
 		return true
@@ -608,7 +741,7 @@ func matchesTarget(target, output string) bool {
 	if abs, err := filepath.Abs(output); err == nil && target == abs {
 		return true
 	}
-	if filepath.Base(target) == filepath.Base(output) {
+	if target == filepath.Base(target) && filepath.Base(target) == filepath.Base(output) {
 		return true
 	}
 	return false

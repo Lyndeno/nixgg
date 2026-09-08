@@ -116,9 +116,21 @@
     flake = false;
   };
 
+  inputs.linux-src = {
+    # Linux 6.12 — the largest, most structurally demanding fixture in
+    # this repo. See examples/linux-kernel's own docstring for the
+    # deliberate scope-down (tinyconfig, vmlinux target only, no
+    # modules), the real shim/expression gaps this fixture found and
+    # fixed, and why it needed a two-phase mkNixggBuild split (plus a
+    # plain stdenv.mkDerivation for phase 2) to make sandbox mode work
+    # — both native and sandbox modes are verified end to end.
+    url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.12.tar.xz";
+    flake = false;
+  };
+
   outputs =
     { self, nixpkgs, nix-15793, lua-src, fmt-src, mosh-src, redis-src, ffmpeg-src,
-      gcc-src, llvm-src, postgresql-src, qemu-src }:
+      gcc-src, llvm-src, postgresql-src, qemu-src, linux-src }:
     let
       forEachSystem = f: builtins.mapAttrs (system: pkgs: f system pkgs) nixpkgs.legacyPackages;
     in
@@ -255,21 +267,22 @@
             doCheck = false;
             postInstall = ''
               mkdir -p $out/shims
-              # The six canonical names, plus clang/clang++ and the
-              # host-triple-prefixed spellings a configure script may
-              # pick. dispatch.FromArgv0 also strips version suffixes
-              # (gcc-15) and triple prefixes, but a shim only fires if a
-              # symlink with that exact name is on PATH — a name we
-              # don't link is a tool nixgg silently never accelerates.
+              # The six canonical names, plus clang/clang++, ld's
+              # personalities, and the host-triple-prefixed spellings a
+              # configure script may pick. dispatch.FromArgv0 also
+              # strips version suffixes (gcc-15) and triple prefixes,
+              # but a shim only fires if a symlink with that exact name
+              # is on PATH — a name we don't link is a tool nixgg
+              # silently never accelerates.
               #
               # Not exhaustive by construction: the full cross product of
               # triples and versions is unbounded. These cover what the
               # examples and common autotools/cmake probes actually
               # invoke; add more if a real project needs them.
-              for t in ar c++ cc g++ gcc ranlib clang clang++; do
+              for t in ar c++ cc g++ gcc ranlib clang clang++ ld ld.bfd ld.gold ld.lld; do
                 ln -s ../bin/nixgg $out/shims/$t
               done
-              for t in gcc g++ cc c++ ar ranlib; do
+              for t in gcc g++ cc c++ ar ranlib ld; do
                 ln -s ../bin/nixgg $out/shims/x86_64-unknown-linux-gnu-$t
                 ln -s ../bin/nixgg $out/shims/x86_64-linux-gnu-$t
               done
@@ -855,6 +868,15 @@
                   }
                 ];
               };
+            };
+            # Two-phase mkNixggBuild split — see examples/linux-kernel's
+            # own docstring for why a single sandbox derivation can't
+            # satisfy Kbuild's synchronous read-back-after-produce
+            # shape, and why phase 2 is a plain stdenv.mkDerivation
+            # rather than another mkNixggBuild call.
+            linux-kernel = {
+              dir = ./examples/linux-kernel;
+              args = { inherit (pkgs) stdenv flex bison elfutils pkg-config bc; src = linux-src; };
             };
             # Two sources, no single `src`: phase 1 builds the codegen
             # tool, phase 2 execs it mid-build. Smoke test for the

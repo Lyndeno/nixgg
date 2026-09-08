@@ -256,6 +256,12 @@ func TestLinkerScriptPath(t *testing.T) {
 		{"-Tbss= is an address, not a script", []string{"-Tbss=0x3000"}, ""},
 		{"no linker script flag at all", []string{"main.o", "-o", "prog"}, ""},
 		{"trailing -T with no value", []string{"main.o", "-T"}, ""},
+		// Bare --script=<path> — ld's own long-form spelling, no
+		// -Wl,/-Xlinker wrapper — Linux Kbuild's scripts/link-vmlinux.sh
+		// emits exactly this (wl="" for every arch but um) when it
+		// invokes $(LD) directly rather than through a compiler driver.
+		{"bare --script=", []string{"--script=./arch/x86/kernel/vmlinux.lds", "-o", "vmlinux"}, "./arch/x86/kernel/vmlinux.lds"},
+		{"-Wl,--script= comma form", []string{"-Wl,--script=script.ld"}, "script.ld"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := linkerScriptPath(tc.args); got != tc.want {
@@ -283,6 +289,54 @@ func TestParseLinkArgsSharedLibIsAnInput(t *testing.T) {
 			t.Errorf("shared lib landed in flags (%q) — it would be baked into "+
 				"the drv as a path that does not exist in the sandbox", flags)
 		}
+	}
+}
+
+// TestParseLinkArgsSonameValueIsNotAnInput pins a real regression:
+// Linux Kbuild's vdso32 build passes raw ld `-soname linux-gate.so.1`
+// (ELF DT_SONAME metadata, not a link input) on its link line.
+// isSharedLib's own `.so.N` version-suffix match — deliberately
+// generous, so a real positional `libfoo.so.1.2.3` input is still
+// caught — means the bare VALUE following -soname looks exactly like
+// a versioned shared-library input if -soname's own two-token shape
+// isn't recognized first. Confirmed directly against a real build:
+// without this case, classifyInputs correctly reported
+// "linux-gate.so.1" as absent (nothing on disk has that name), and
+// the entire link fell to unshimmed Passthrough — which then failed
+// outright because its own OTHER inputs were still-deferred
+// placeholder thunk symlinks, not real objects.
+func TestParseLinkArgsSonameValueIsNotAnInput(t *testing.T) {
+	_, inputs, flags, _, ok := parseLinkArgs(
+		[]string{"note.o", "-soname", "linux-gate.so.1", "-shared", "-o", "vdso32.so.dbg"})
+	if !ok {
+		t.Fatal("parseLinkArgs returned !ok")
+	}
+	want := []string{"note.o"}
+	if !reflect.DeepEqual(inputs, want) {
+		t.Errorf("inputs = %q, want %q — -soname's value must never be treated "+
+			"as a link input", inputs, want)
+	}
+	wantFlags := []string{"-soname", "linux-gate.so.1", "-shared"}
+	if !reflect.DeepEqual(flags, wantFlags) {
+		t.Errorf("flags = %q, want %q", flags, wantFlags)
+	}
+}
+
+// TestParseLinkArgsTrailingSonameWithNoValue pins that a malformed
+// line (-soname as the very last token) doesn't panic or index past
+// the end — same defensive shape as the existing -L/-MF/-Wl,--dependency-file
+// two-token cases in parseLinkArgs.
+func TestParseLinkArgsTrailingSonameWithNoValue(t *testing.T) {
+	_, inputs, flags, _, ok := parseLinkArgs(
+		[]string{"main.o", "-o", "prog", "-soname"})
+	if !ok {
+		t.Fatal("parseLinkArgs returned !ok")
+	}
+	if !reflect.DeepEqual(inputs, []string{"main.o"}) {
+		t.Errorf("inputs = %q, want [main.o]", inputs)
+	}
+	if !reflect.DeepEqual(flags, []string{"-soname"}) {
+		t.Errorf("flags = %q, want [-soname]", flags)
 	}
 }
 
@@ -614,6 +668,69 @@ func TestParseLinkArgsPreservesArchiveGroup(t *testing.T) {
 	}
 }
 
+// TestParseLinkArgsWholeArchiveTracksNamedSubset pins that
+// --whole-archive/--no-whole-archive tracks exactly which inputs fell
+// inside the span, unlike isGroupBracket's own single global group
+// (widened to cover every input — safe there, NOT safe here, see
+// WholeArchiveInputs' own docstring for why: it changes archive member
+// SELECTION, not just resolution order). Modeled directly on Linux
+// Kbuild's own vmlinux.o link recipe (scripts/Makefile.vmlinux_o's
+// cmd_ld_vmlinux.o).
+func TestParseLinkArgsWholeArchiveTracksNamedSubset(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		args       []string
+		wantWhole  []string
+		wantInputs []string
+	}{
+		{
+			// Kbuild's own real shape: --whole-archive wraps ONLY
+			// vmlinux.a, --start-group/--end-group wraps the libs —
+			// two independent, non-overlapping spans on the same line.
+			name: "kbuild vmlinux.o shape",
+			args: []string{"-r", "--whole-archive", "vmlinux.a", "--no-whole-archive",
+				"--start-group", "lib.a", "lib2.a", "--end-group", "-o", "vmlinux.o"},
+			wantWhole:  []string{"vmlinux.a"},
+			wantInputs: []string{"vmlinux.a", "lib.a", "lib2.a"},
+		},
+		{
+			name:       "no whole-archive span at all",
+			args:       []string{"a.o", "liba.a", "-o", "prog"},
+			wantWhole:  nil,
+			wantInputs: []string{"a.o", "liba.a"},
+		},
+		{
+			name: "-Wl, spelling (driver-invoked link)",
+			args: []string{"a.o", "-Wl,--whole-archive", "liba.a",
+				"-Wl,--no-whole-archive", "-o", "prog"},
+			wantWhole:  []string{"liba.a"},
+			wantInputs: []string{"a.o", "liba.a"},
+		},
+		{
+			// Multiple inputs inside one span all get tracked.
+			name: "multiple inputs inside one span",
+			args: []string{"--whole-archive", "liba.a", "libb.a",
+				"--no-whole-archive", "-o", "prog"},
+			wantWhole:  []string{"liba.a", "libb.a"},
+			wantInputs: []string{"liba.a", "libb.a"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var whole []string
+			_, inputs, _, _, ok := parseLinkArgsWholeArchive(tc.args, &whole)
+			if !ok {
+				t.Fatalf("parseLinkArgsWholeArchive failed on %q", tc.args)
+			}
+			if !reflect.DeepEqual(inputs, tc.wantInputs) {
+				t.Errorf("inputs = %q, want %q", inputs, tc.wantInputs)
+			}
+			if !reflect.DeepEqual(whole, tc.wantWhole) {
+				t.Errorf("wholeArchive = %q, want %q", whole, tc.wantWhole)
+			}
+		})
+	}
+}
+
 // TestStoreInputPromotedArtifactKeepsItsSubdir guards the second half of
 // the FHS change, which the first half's test did not cover.
 //
@@ -670,4 +787,65 @@ func TestStoreInputPromotedArtifactKeepsItsSubdir(t *testing.T) {
 			t.Errorf("Name = %q, want the resolved Sub", ni.Name)
 		}
 	})
+}
+
+// TestMatchesTarget pins the basename-fallback boundary: it fires
+// ONLY when target itself is a bare name (no directory component),
+// never when target is itself a relative/absolute path. Modeled on
+// Linux Kbuild's own recursive build, which produces many archives
+// sharing a basename ("lib.a" at both lib/lib.a and
+// arch/x86/lib/lib.a) — a path-aware target that still fell through
+// to basename comparison would ALSO match the wrong sibling's own
+// call, and maybeSubmit would try to submit the same output key
+// twice for two different drvs.
+func TestMatchesTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		target, output string
+		want           bool
+	}{
+		{"bare name matches exactly", "mosh-server", "mosh-server", true},
+		{"bare name matches via basename fallback", "mosh-server", "src/mosh-server", true},
+		{"bare name matches an absolute output", "mosh-server", "/build/src/mosh-server", true},
+		{
+			// The bug this test exists to catch: a path-shaped target
+			// must NOT basename-match a different sibling that happens
+			// to share the same final component.
+			name:   "path-shaped target does not basename-match a sibling",
+			target: "lib/lib.a", output: "arch/x86/lib/lib.a", want: false,
+		},
+		{
+			name:   "path-shaped target does not basename-match the other sibling either",
+			target: "arch/x86/lib/lib.a", output: "lib/lib.a", want: false,
+		},
+		{"path-shaped target matches its own exact path", "lib/lib.a", "lib/lib.a", true},
+		{
+			// A path-shaped target ("built-in.a" prefixed with a
+			// directory) must not basename-match a DIFFERENT nested
+			// built-in.a either — same shape as the lib.a case above,
+			// confirming the fix isn't specific to one basename.
+			name:   "path-shaped built-in.a target does not basename-match a different nested one",
+			target: "arch/x86/built-in.a", output: "arch/x86/kernel/built-in.a", want: false,
+		},
+		{
+			// "built-in.a" as a BARE target (no "/") is a real, if
+			// risky, case: Kbuild's own top-level archive is invoked
+			// with exactly this literal bare name (source root, no
+			// path prefix), so the basename fallback correctly fires
+			// for it — but the same declaration would ALSO match every
+			// nested built-in.a's own call, which is why the fixture
+			// that actually needs to target the top-level one uses
+			// vmlinux.a (globally unique) instead, never bare
+			// "built-in.a" — this case documents that tradeoff, not a
+			// recommendation to declare "built-in.a" as a real target.
+			name:   "bare built-in.a matches the literal top-level invocation",
+			target: "built-in.a", output: "built-in.a", want: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchesTarget(tc.target, tc.output); got != tc.want {
+				t.Errorf("matchesTarget(%q, %q) = %v, want %v", tc.target, tc.output, got, tc.want)
+			}
+		})
+	}
 }

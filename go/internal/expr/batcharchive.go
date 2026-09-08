@@ -338,4 +338,3 @@ const batchConcurrencyDrain = `for gg_pid in $gg_pids; do
 done
 [ "$gg_fail" -eq 0 ] || exit 1
 `
-

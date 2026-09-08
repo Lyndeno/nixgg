@@ -21,6 +21,7 @@ import (
 	"github.com/tbereknyei/nixgg/internal/expr"
 	"github.com/tbereknyei/nixgg/internal/mode"
 	"github.com/tbereknyei/nixgg/internal/paths"
+	"github.com/tbereknyei/nixgg/internal/realise"
 	"github.com/tbereknyei/nixgg/internal/sandbox"
 	"github.com/tbereknyei/nixgg/internal/scan"
 	"github.com/tbereknyei/nixgg/internal/stage"
@@ -71,13 +72,78 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 		// it honored.
 		return Passthrough(realTool, args)
 	}
-	source, output, flags, ok := parseCompileArgs(args)
+	source, output, depfile, flags, ok := parseCompileArgs(args)
 	if !ok {
 		// Not a single-TU compile; execv the real cc and hope. Say so:
 		// otherwise a build where nothing is accelerated is
 		// indistinguishable from one where everything is.
 		logf("compile passthrough: not a single-TU compile (%s)", joinBase(args))
 		activitylog.Emit("compile", "passthrough", activitylog.Fields{"argv": args})
+		return Passthrough(realTool, args)
+	}
+
+	// Linux Kbuild's scripts/mod/empty.o: an empty TU compiled solely
+	// so mk_elfconfig can read its raw ELF header bytes off disk
+	// (`elfconfig.h: empty.o mk_elfconfig FORCE`) to detect the
+	// target's ELF class. Same PROBE shape as an autoconf conftest or
+	// cmake compiler-detection file — but unlike those, it isn't run
+	// under a configure-time NIXGG_BYPASS, so it reaches this shim on
+	// every normal `make vmlinux`/`make modules` invocation
+	// (hostprogs-always-y forces it every time).
+	//
+	// A plain Passthrough, not mode.Realise's synchronous-build
+	// carveout: this probe has no headers, no interesting flags, and
+	// nothing about it benefits from CA-hashing or caching (it reruns
+	// unconditionally regardless). mode.Realise's own `nix build
+	// --file` (needed for a REAL project's probe, which DOES need the
+	// sandboxed build's exact flags/headers to answer correctly) is
+	// also fundamentally incompatible with sandbox mode — the
+	// builder-rpc-v0 protocol has no "build this now and give me
+	// output" operation, only "register for later" — confirmed
+	// directly: this exact probe, routed through mode.Realise, failed
+	// inside a real sandboxed build with "no substituter" errors from
+	// a nested, network-isolated `nix build` that could never have
+	// worked there. Passthrough has no such problem: it's a plain
+	// `syscall.Exec`, identical in both modes, and correct here
+	// because this probe needs nothing from nixgg's own graph at all.
+	if isKbuildElfProbe(source) {
+		return Passthrough(realTool, args)
+	}
+
+	// Linux Kbuild's arch/x86/realmode/rm/{header,trampoline_32,
+	// trampoline_64,stack,reboot}.o: before realmode.elf even links,
+	// `scripts/Kbuild.include`'s own `cmd_pasyms` rule runs `nm`
+	// directly on these same objects to generate pasyms.h's physical-
+	// address symbol aliases — synchronous, same recipe, same "read
+	// the just-compiled TU's raw bytes back immediately" shape as
+	// scripts/mod/empty.o above. Confirmed directly against a real
+	// sandboxed build: routed through mode.Realise (as these were
+	// originally, see mode.go's own now-stale isKbuildRealmodeObj
+	// history), this hits the identical "no substituter" failure
+	// empty.o did — mode.Realise's `nix build --file` mechanism is
+	// incompatible with sandbox mode categorically, not just for that
+	// one probe. These objects have no headers worth CA-hashing either
+	// (tiny, hostprogs-always-y-style always-rebuilt .S sources), so
+	// Passthrough loses nothing here, same reasoning as isKbuildElfProbe.
+	if isKbuildRealmodeObj(source) {
+		return Passthrough(realTool, args)
+	}
+
+	// Linux Kbuild's arch/x86/entry/vdso/vdso32/{note,system_call,
+	// sigreturn,vclock_gettime,vgetcpu}.o: these are vdso32.so.dbg's
+	// OWN link inputs (arch/x86/entry/vdso/Makefile's vobjs32-y). Once
+	// isKbuildVDSODbg's own link carveout (mode.ForLink) turned out to
+	// share mode.Realise's sandbox-mode incompatibility, this compile-
+	// side fix became the one that actually matters: with these five
+	// objects Passthrough'd (real files, not nixgg thunks/drvrefs),
+	// vdso32.so.dbg's link falls to RealiseThunkArgsAndPassthrough's
+	// own Passthrough — a real, unshimmed `ld` producing real ELF
+	// bytes — the same emergent fix that already made realmode.elf's
+	// own link succeed once its sibling .o's got this same treatment,
+	// confirmed directly against a real sandboxed build. No separate
+	// link-side fix needed for vdso32.so.dbg once this compile-side
+	// one is in place.
+	if isKbuildVDSO32Obj(source) {
 		return Passthrough(realTool, args)
 	}
 
@@ -96,6 +162,25 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 	scanResult, err := scan.Run(l, scannerCC, source, flags)
 	if err != nil {
 		return err
+	}
+
+	// Kbuild's own `cmd_and_fixdep` macro (scripts/Kbuild.include) runs
+	// `fixdep <depfile> <target> <cmdline>` synchronously, in the same
+	// recipe, right after this shim invocation returns to make — it
+	// expects a real `.d` file (from `-Wp,-MMD,<depfile>`) to already
+	// exist. nixgg's deferred-compile model means the real compiler
+	// that would eventually honor that flag may not run until much
+	// later (or never, if the `.o` is only ever consumed as a store
+	// reference) — too late for fixdep's synchronous call. Write a
+	// real substitute instead: fixdep doesn't care whether a `.d`
+	// file's dependency list came from genuine `-MD` output, only that
+	// every listed path is real and readable, which scan's own header
+	// list already is.
+	if depfile != "" {
+		if err := writeSynthesizedDepfile(depfile, output, source, scanResult.Headers); err != nil {
+			return err
+		}
+		logf("  fixdep:     %s", depfile)
 	}
 
 	// 2. Stage source + headers into .nixgg/srcs/<tu-id>/.
@@ -190,7 +275,7 @@ func Compile(tool dispatch.Tool, args []string, cfg *toolchain.Config, l paths.L
 
 	// 5. Dispatch on mode.
 	if mode.For(source) == mode.Realise {
-		return realiseAndLink(e, output, cfg, l)
+		return realiseAndLink(e, output, "", cfg, l)
 	}
 
 	if batched {
@@ -349,8 +434,16 @@ func baseNameOf(p string) string {
 // parseCompileArgs identifies the source + output + non-path flags.
 // Returns ok=false if the invocation isn't a single-TU `-c` compile —
 // in that case the caller passes through to the real cc.
-func parseCompileArgs(args []string) (source, output string, flags []string, ok bool) {
+//
+// depfile is the path a genuine `-MD`/`-MMD` compile would have
+// written its Makefile-dependency-rule output to, captured (not
+// stripped-and-forgotten) so the caller can synthesize a substitute —
+// see the fixdep comment in Compile. Recognizes both autotools-style
+// argv (`-MF <path>`, or bare `-MD`/`-MMD` with the path implied by
+// `-o`) and Kbuild's `-Wp,-MMD,<path>` comma-joined pass-to-cpp form.
+func parseCompileArgs(args []string) (source, output, depfile string, flags []string, ok bool) {
 	hasDashC := false
+	hasDepFlag := false // bare -MD/-MMD with no explicit -MF seen yet
 	// Non-empty once `-x <lang>` has been seen: from that point a
 	// non-flag token is the source whatever its extension.
 	explicitLang := ""
@@ -361,7 +454,7 @@ func parseCompileArgs(args []string) (source, output string, flags []string, ok 
 			hasDashC = true
 		case a == "-o":
 			if i+1 >= len(args) {
-				return "", "", nil, false
+				return "", "", "", nil, false
 			}
 			output = args[i+1]
 			i++
@@ -370,19 +463,40 @@ func parseCompileArgs(args []string) (source, output string, flags []string, ok 
 		// Dep-file generation flags — drop them. They target paths
 		// outside our sandbox (relative to make's cwd), so gcc inside
 		// the derivation would try to open cachedObjs/… and fail.
-		// scan-headers already gave us the header list we need.
-		case a == "-M" || a == "-MM" || a == "-MG" || a == "-MP" || a == "-MD" || a == "-MMD":
-			// no-op (single-arg forms)
-		case a == "-MF" || a == "-MT" || a == "-MQ":
+		// scan-headers already gave us the header list we need. The
+		// depfile path itself is captured above, not discarded, so a
+		// caller relying on a post-compile fixdep-style step (Kbuild)
+		// still finds a real file waiting for it.
+		case a == "-M" || a == "-MM" || a == "-MG" || a == "-MP":
+			// no-op (single-arg forms; no depfile path implied)
+		case a == "-MD" || a == "-MMD":
+			hasDepFlag = true
+		case a == "-MF":
+			if i+1 >= len(args) {
+				return "", "", "", nil, false
+			}
+			depfile = args[i+1]
+			i++
+		case a == "-MT" || a == "-MQ":
 			// two-arg forms; skip the value too
 			if i+1 >= len(args) {
-				return "", "", nil, false
+				return "", "", "", nil, false
 			}
 			i++
+		case strings.HasPrefix(a, "-Wp,"):
+			// GCC's comma-joined pass-to-cpp form, e.g.
+			// `-Wp,-MMD,path/to/foo.d` or `-Wp,-MMD,path,-MP` — Kbuild's
+			// own c_flags (scripts/Makefile.lib) always uses this
+			// instead of separate -MD/-MF tokens.
+			if p := depfileFromWp(a); p != "" {
+				depfile = p
+			}
+			// Not appended to flags: these target the caller's own
+			// cpp/depfile bookkeeping, meaningless inside the sandbox.
 		case a == "-x" || a == "-Xlinker" || a == "-Xassembler":
 			// Two-arg forms with values that aren't sources; keep both.
 			if i+1 >= len(args) {
-				return "", "", nil, false
+				return "", "", "", nil, false
 			}
 			flags = append(flags, a, args[i+1])
 			// `-x <lang>` overrides extension-based language detection,
@@ -400,7 +514,7 @@ func parseCompileArgs(args []string) (source, output string, flags []string, ok 
 		case isSource(a):
 			if source != "" {
 				// Multiple sources — we don't model that in a single TU.
-				return "", "", nil, false
+				return "", "", "", nil, false
 			}
 			source = a
 		case explicitLang != "" && source == "" && !strings.HasPrefix(a, "-"):
@@ -412,9 +526,45 @@ func parseCompileArgs(args []string) (source, output string, flags []string, ok 
 		}
 	}
 	if !hasDashC || source == "" {
-		return "", "", nil, false
+		return "", "", "", nil, false
 	}
-	return source, output, flags, true
+	// gcc's documented default when -MD/-MMD appears without -MF: the
+	// depfile path is the object's own path with its extension
+	// replaced by .d (computed after `output` is fully resolved, since
+	// a caller's `-MDfoo.d` attached form doesn't exist — only -MF
+	// carries an explicit path — so this is the only implicit case).
+	if depfile == "" && hasDepFlag {
+		out := output
+		if out == "" {
+			out = defaultOutputName(source, flags)
+		}
+		depfile = depfileFromObjName(out)
+	}
+	return source, output, depfile, flags, true
+}
+
+// depfileFromWp extracts a depfile path from a `-Wp,opt1,opt2,...`
+// token: the value immediately following a `-MMD`/`-MD` option in the
+// comma list is the depfile path (Kbuild's own convention — see
+// scripts/Makefile.lib's `c_flags = -Wp,-MMD,$(depfile) ...`).
+func depfileFromWp(a string) string {
+	parts := strings.Split(strings.TrimPrefix(a, "-Wp,"), ",")
+	for i, p := range parts {
+		if (p == "-MMD" || p == "-MD") && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+// depfileFromObjName mirrors gcc's own default depfile-naming rule
+// for -MD/-MMD without an explicit -MF: replace the object's
+// extension with .d.
+func depfileFromObjName(obj string) string {
+	if dot := strings.LastIndexByte(obj, '.'); dot > 0 {
+		return obj[:dot] + ".d"
+	}
+	return obj + ".d"
 }
 
 // isSource returns true if a token looks like a source file that the
@@ -477,9 +627,41 @@ func rewriteFlags(caller, staged, store, forceInc []string) []string {
 }
 
 // realiseAndLink is the (rare) realise-mode carveout: build the thunk
-// synchronously via `nix build --file <tmp>.nix` and re-target the
-// output symlink. Used for autoconf conftests and cmake probes.
-func realiseAndLink(exprBody, output string, cfg *toolchain.Config, l paths.Layout) error {
+// synchronously via `nix build --file <tmp>.nix` and re-target output
+// at a real, writable copy of the result. Used for autoconf
+// conftests, cmake probes, and (via mode.ForLink, called from
+// link.go) Kbuild's own realmode.elf/vmlinux.o/vmlinux, whose build
+// reaches this same function through a link, not a compile.
+//
+// subdir is the caller's own knowledge of where its OWN Kind writes
+// this artifact (outSubdir()'s value) — NOT re-derived from output's
+// filename here. expr.ArtifactSubdir(name) guesses from the name's
+// suffix (".o" => flat, ".a" => lib, else => bin), which is right for
+// compile.go's own callers (always producing a genuine compile .o,
+// always flat) and right for realmode.elf/vdso32.so.dbg/modpost (none
+// end in .o/.a) — but WRONG for Kbuild's own vmlinux.o, a LINK output
+// that happens to be named like a compile one: guessing from the name
+// alone put every KindLink caller's own real bin/ placement at risk
+// of collision with compile.go's flat convention, confirmed directly
+// (`vmlinux.o` link: "expected .../vmlinux.o after build" — the real
+// file was at bin/vmlinux.o, ArtifactSubdir guessed flat). Passing the
+// subdir explicitly means each caller states what its OWN Kind
+// actually does, with no naming coincidence load-bearing.
+//
+// A real copy (via realise.PromoteToStoreSubdir), not a symlink: this
+// used to symlink output at the store path directly, which worked for
+// every carveout that's only ever READ back (realmode.elf, empty.o-
+// style probes) but broke Kbuild's own vmlinux — scripts/
+// link-vmlinux.sh's `sorttable vmlinux` opens the file for IN-PLACE
+// WRITING (rewriting sorted-table sections), and a symlink into the
+// read-only Nix store fails "Permission denied". Same fix
+// realise.Realise's own force-promotion already uses for the
+// identical reason (see PromoteToStore's own docstring on Nix's
+// pinned 1969 mtimes AND store-path read-only permissions) — applying
+// it uniformly here, not just for vmlinux, keeps every realise-mode
+// carveout on one code path rather than branching on which ones
+// happen to need write access today.
+func realiseAndLink(exprBody, output, subdir string, cfg *toolchain.Config, l paths.Layout) error {
 	// Write to a tempfile alongside the real thunks so relative-path
 	// imports resolve. Reuse the id-based path to keep the file if the
 	// same expression comes back later.
@@ -492,29 +674,7 @@ func realiseAndLink(exprBody, output string, cfg *toolchain.Config, l paths.Layo
 	if err != nil {
 		return err
 	}
-	// Re-point output at /nix/store/... (via the alt-store's on-disk
-	// prefix if present).
-	//
-	// Flat basename is correct here, not an oversight: mode.Realise is
-	// compile-only by design (see mode.For's docstring — link/archive
-	// never reach this function), and compile outputs are the one Kind
-	// FHS placement (expr.ArtifactSubdir) deliberately leaves flat. If
-	// that ever changes, this needs the same expr.ArtifactSubdir lookup
-	// storeInput and PromoteToStore already use — this is the third spot
-	// that class of bug lives in, just currently inert.
-	// See TestRealiseCarveoutOutputsAreAlwaysFlat for the pinned check.
-	src := altStoreOnDisk(cfg.Store, built) + "/" + filepath.Base(output)
-	if _, err := os.Stat(src); err != nil {
-		return fmt.Errorf("expected %s after build: %w", src, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(output)
-	if err := os.Symlink(src, output); err != nil {
-		return err
-	}
-	if err := thunk.RecordSymlink(l, id, output); err != nil {
+	if err := realise.PromoteToStoreSubdir(l, cfg, id, built, output, subdir); err != nil {
 		return err
 	}
 	logf("  built:      %s", built)
@@ -543,18 +703,6 @@ func nixBuildFile(cfg *toolchain.Config, thunkPath string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("nix build returned no output")
-}
-
-// altStoreOnDisk maps a canonical /nix/store/... path to its on-disk
-// location under the alt store's root (e.g. /tmp/nixgg-store/nix/store/...).
-// Returns the path unchanged for a system store.
-func altStoreOnDisk(storeURL, canonical string) string {
-	// storeURL looks like "local?root=/tmp/nixgg-store" for alt stores.
-	const prefix = "local?root="
-	if strings.HasPrefix(storeURL, prefix) {
-		return strings.TrimPrefix(storeURL, prefix) + canonical
-	}
-	return canonical
 }
 
 // logf emits a one-line `[nixgg]` diagnostic on stderr. Kept minimal
@@ -605,4 +753,97 @@ func isHeaderLang(lang string) bool {
 		return true
 	}
 	return false
+}
+
+// isKbuildElfProbe matches Linux Kbuild's scripts/mod/empty.o: an
+// empty TU compiled solely so mk_elfconfig can read its raw ELF
+// header bytes off disk (`elfconfig.h: empty.o mk_elfconfig FORCE` in
+// scripts/mod/Makefile) to detect the target's ELF class. See this
+// function's own call site in Compile for why it gets a plain
+// Passthrough rather than mode.Realise's synchronous-build carveout
+// (sandbox-mode incompatibility, and nothing here benefits from
+// nixgg's own graph anyway).
+//
+// Matched on the Kbuild-specific path suffix, not the bare basename
+// "empty.c"/"empty.o" — those are generic enough that an unrelated
+// project could legitimately name a real TU that, and this package's
+// own philosophy (matching mode.go's) is narrow, project-confirmed
+// patterns over broad guesses.
+func isKbuildElfProbe(source string) bool {
+	return strings.HasSuffix(source, "scripts/mod/empty.c") ||
+		strings.HasSuffix(source, "scripts/mod/empty.o")
+}
+
+// isKbuildRealmodeObj matches Linux Kbuild's
+// arch/x86/realmode/rm/{header,trampoline_32,trampoline_64,stack,
+// reboot}.o — the fixed member list `arch/x86/realmode/rm/Makefile`'s
+// own `realmode-y` builds (all `.S` sources). See this function's own
+// call site in Compile for why it gets a plain Passthrough rather
+// than mode.Realise's synchronous-build carveout (sandbox-mode
+// incompatibility, and nothing here benefits from nixgg's own graph
+// anyway — same reasoning as isKbuildElfProbe above).
+//
+// Matched on the fixed, Kbuild-specific path suffixes (not a directory
+// prefix + any object) since this is the exact, small member list
+// `realmode-y` names — narrower than a directory-wide match, same
+// philosophy as isKbuildElfProbe's own suffix match.
+func isKbuildRealmodeObj(source string) bool {
+	base := filepath.Base(source)
+	if !strings.Contains(source, "arch/x86/realmode/rm/") {
+		return false
+	}
+	stem := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(base, ".o"), ".S"), ".c")
+	switch stem {
+	case "header", "trampoline_32", "trampoline_64", "stack", "reboot":
+		return true
+	}
+	return false
+}
+
+// isKbuildVDSO32Obj matches Linux Kbuild's arch/x86/entry/vdso/
+// vdso32/{note,system_call,sigreturn,vclock_gettime,vgetcpu}.o — the
+// fixed member list arch/x86/entry/vdso/Makefile's own `vobjs32-y`
+// builds. See this function's own call site in Compile for why it
+// gets a plain Passthrough (same sandbox-mode reasoning as
+// isKbuildElfProbe/isKbuildRealmodeObj above, plus the emergent fix
+// this gives vdso32.so.dbg's own link — see the call site).
+//
+// Matched on the fixed, Kbuild-specific member list under vdso32/,
+// same philosophy as isKbuildRealmodeObj's own fixed-member match.
+func isKbuildVDSO32Obj(source string) bool {
+	if !strings.Contains(source, "arch/x86/entry/vdso/vdso32/") {
+		return false
+	}
+	base := filepath.Base(source)
+	stem := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(base, ".o"), ".S"), ".c")
+	switch stem {
+	case "note", "system_call", "sigreturn", "vclock_gettime", "vgetcpu":
+		return true
+	}
+	return false
+}
+
+// writeSynthesizedDepfile writes a genuine Makefile dependency rule
+// at depfile — `<output>: <source> <header1> <header2> ...` with
+// backslash line continuations — built from scan's own header list.
+//
+// This stands in for a real `-MD`/`-Wp,-MMD,...` compiler-produced
+// depfile so that a caller expecting one right after this shim
+// returns (Kbuild's `cmd_and_fixdep`, which invokes `fixdep` on it
+// synchronously, same recipe) finds a real file rather than failing
+// outright. Every path listed is real and on-disk (scan.Run only
+// ever resolves headers that exist), which is all a consumer like
+// fixdep requires — it doesn't distinguish a synthesized rule from
+// genuine compiler output.
+func writeSynthesizedDepfile(depfile, output, source string, headers []scan.Header) error {
+	if err := os.MkdirAll(filepath.Dir(depfile), 0o755); err != nil {
+		return err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s: %s", output, source)
+	for _, h := range headers {
+		fmt.Fprintf(&b, " \\\n %s", h.Abs)
+	}
+	b.WriteByte('\n')
+	return os.WriteFile(depfile, []byte(b.String()), 0o644)
 }

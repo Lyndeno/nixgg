@@ -29,7 +29,7 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	sandbox := MemberRecord{
 		Group: "vendor", Tool: "cc",
 		Source: "lapi.c", OutName: "lapi.o",
-		Flags: []string{"-DLUA_ANSI"},
+		Flags:    []string{"-DLUA_ANSI"},
 		SrcStore: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-deps-lua-src-lapi-o",
 	}
 

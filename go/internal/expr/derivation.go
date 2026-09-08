@@ -114,6 +114,31 @@ type Derivation struct {
 	// expressible once inputs and flags have been separated.
 	GroupInputs bool
 
+	// WholeArchiveInputs names (basenames, matched against derivInput.Name)
+	// the subset of Inputs that fell between --whole-archive and
+	// --no-whole-archive on the caller's own link line. Unlike
+	// GroupInputs (one span, widened to cover every input — safe,
+	// verified against ld), --whole-archive's span CANNOT be widened
+	// the same way: it changes archive member SELECTION (every member
+	// forced in, vs. only members some other input references), not
+	// just resolution order, so wrapping an input the caller never put
+	// inside it would silently force in objects nothing needs. Confirmed
+	// directly against Linux Kbuild's own vmlinux.o link
+	// (scripts/Makefile.vmlinux_o's cmd_ld_vmlinux.o: `--whole-archive
+	// vmlinux.a --no-whole-archive --start-group $(KBUILD_VMLINUX_LIBS)
+	// --end-group`) — treating this the same as GroupInputs (one global
+	// span) put --whole-archive/--no-whole-archive adjacent with
+	// nothing between them, and vmlinux.a landed inside --start-group's
+	// span instead, producing a vmlinux.o with no sections at all
+	// (objtool/objcopy's later reads both failed).
+	//
+	// A name list rather than a boolean per Input: --whole-archive only
+	// meaningfully applies to archives (.a), and Kbuild's own recipe
+	// wraps exactly one of several inputs, not all of them — the exact
+	// shape GroupInputs's own "harmless to widen" argument does NOT
+	// hold for.
+	WholeArchiveInputs []string
+
 	// Archive-only: `ar` modifier string (e.g. "rcs").
 	ARFlags string
 
@@ -388,6 +413,25 @@ func (d *Derivation) compilerOrAR() string {
 	return d.Compiler
 }
 
+// isRawLinker reports whether d.Tool is a linker binary invoked
+// directly (ld — see dispatch.Tool.Basename, which always normalizes
+// ld/ld.bfd/ld.gold/ld.lld/triple-prefixed spellings to this one
+// canonical string) rather than a compiler driver (cc/gcc/clang) that
+// forwards flags to whatever linker it wraps. The two accept
+// different group-bracket spellings: `-Wl,--start-group` is a DRIVER
+// convention (it tells the driver to pass `--start-group` through to
+// ld verbatim); a raw ld invocation needs the bare form and rejects
+// `-Wl,...` outright ("unrecognized option"). Confirmed directly:
+// Linux Kbuild's own vmlinux.o link (scripts/Makefile.vmlinux_o's
+// cmd_ld_vmlinux.o) invokes `ld` raw with bare `--start-group ...
+// --end-group`, and is also the first group-bracketed link this
+// project ever routed through mode.Realise/ForLink's own carveout —
+// every other GroupInputs case up to that point happened to go
+// through a compiler driver.
+func (d *Derivation) isRawLinker() bool {
+	return d.Tool == "ld"
+}
+
 // buildScript is the single source of the shell body — the layout,
 // quoting, and argv order that both wire formats must agree on.
 //
@@ -397,30 +441,44 @@ func (d *Derivation) compilerOrAR() string {
 func (d *Derivation) buildScript(tag, coreutils, compiler string) string {
 	pathPrefix := fmt.Sprintf(`export PATH="%s/bin:%s/bin"`, coreutils, compiler)
 
+	wholeArchive := make(map[string]bool, len(d.WholeArchiveInputs))
+	for _, n := range d.WholeArchiveInputs {
+		wholeArchive[StoreBasename(n)] = true
+	}
 	inputs := func() string {
 		parts := make([]string, 0, len(d.Inputs))
 		for i, in := range d.Inputs {
-			if tag != "" {
-				parts = append(parts, "'"+inputMarker(tag, i)+"'")
-				continue
-			}
-			switch in.InputKind {
-			case "store":
+			var part string
+			switch {
+			case tag != "":
+				part = "'" + inputMarker(tag, i) + "'"
+			case in.InputKind == "store":
 				ref := in.Ref
 				if !strings.HasPrefix(ref, "/nix/store/") {
 					ref = "/nix/store/" + ref
 				}
-				parts = append(parts, fmt.Sprintf("'%s/%s'", ref, in.Name))
-			case "nix":
+				part = fmt.Sprintf("'%s/%s'", ref, in.Name)
+			case in.InputKind == "nix":
 				// A sibling drv we reference. Its artifact sits under the
 				// FHS subdir its own Kind implies, so reach it there.
 				name := in.Name
 				if sub := inputSubdirFor(in.Name); sub != "" {
 					name = sub + "/" + name
 				}
-				parts = append(parts,
-					fmt.Sprintf("'%s/%s'", caOutputPlaceholder(in.Ref, "out"), name))
+				part = fmt.Sprintf("'%s/%s'", caOutputPlaceholder(in.Ref, "out"), name)
 			}
+			if part == "" {
+				continue
+			}
+			// --whole-archive wraps a NAMED SUBSET of inputs, unlike
+			// GroupInputs' single global span (see WholeArchiveInputs'
+			// own docstring for why widening isn't safe here) — so this
+			// wraps each matching input individually rather than the
+			// whole list once.
+			if wholeArchive[StoreBasename(in.Name)] {
+				part = "--whole-archive " + part + " --no-whole-archive"
+			}
+			parts = append(parts, part)
 		}
 		return strings.Join(parts, " ")
 	}
@@ -456,9 +514,18 @@ cd "$src"
 		// Re-emit the archive group around the whole input list. Only
 		// reached when the caller asked for it, so the no-group layout
 		// below stays byte-identical for every existing derivation.
+		//
+		// Spelling depends on whether d.Tool is a compiler driver or
+		// a raw linker — see isRawLinker's own docstring for why both
+		// exist and why this project didn't need the distinction
+		// until Linux Kbuild's vmlinux.o link.
 		inputList := inputs()
 		if d.GroupInputs && inputList != "" {
-			inputList = "-Wl,--start-group " + inputList + " -Wl,--end-group"
+			if d.isRawLinker() {
+				inputList = "--start-group " + inputList + " --end-group"
+			} else {
+				inputList = "-Wl,--start-group " + inputList + " -Wl,--end-group"
+			}
 		}
 		if len(lflags) == 0 {
 			return fmt.Sprintf(

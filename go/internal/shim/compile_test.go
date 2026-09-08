@@ -1,12 +1,16 @@
 package shim
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tbereknyei/nixgg/internal/expr"
 	"github.com/tbereknyei/nixgg/internal/mode"
+	"github.com/tbereknyei/nixgg/internal/scan"
 )
 
 // TestRewriteFlagsKeepsForceIncludes guards a bug that already shipped
@@ -191,7 +195,7 @@ func TestParseCompileArgsExplicitLanguage(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			src, out, flags, ok := parseCompileArgs(tc.args)
+			src, out, _, flags, ok := parseCompileArgs(tc.args)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v (args %q)", ok, tc.wantOK, tc.args)
 			}
@@ -293,47 +297,40 @@ func TestDefaultOutputName(t *testing.T) {
 // reason about.
 func TestOnlyDashXLegitimisesAnOddSource(t *testing.T) {
 	// -Xassembler present, no real source: must NOT adopt the odd token.
-	if _, _, _, ok := parseCompileArgs([]string{
+	if _, _, _, _, ok := parseCompileArgs([]string{
 		"-c", "-Xassembler", "--noexecstack", "mystery.dat", "-o", "out.o",
 	}); ok {
 		t.Error("an -Xassembler value legitimised a non-source token as the " +
 			"compile source; only -x names a language")
 	}
 	// -Xlinker likewise.
-	if _, _, _, ok := parseCompileArgs([]string{
+	if _, _, _, _, ok := parseCompileArgs([]string{
 		"-c", "-Xlinker", "-z", "mystery.dat", "-o", "out.o",
 	}); ok {
 		t.Error("-Xlinker legitimised a non-source token as the compile source")
 	}
 	// And the real thing still works.
-	if src, _, _, ok := parseCompileArgs([]string{
+	if src, _, _, _, ok := parseCompileArgs([]string{
 		"-x", "c++-header", "-c", "pch.h", "-o", "pch.h.gch",
 	}); !ok || src != "pch.h" {
 		t.Errorf("-x path broken: src=%q ok=%v", src, ok)
 	}
 }
 
-// TestRealiseCarveoutOutputsAreAlwaysFlat pins the assumption
-// realiseAndLink's flat-basename path resolution depends on: for every
-// SOURCE filename that sends a compile into mode.Realise, the OUTPUT
-// name that compile actually gets (via defaultOutputName, when the caller
-// passed no -o — the common case for these probes) must be
-// compile-shaped, i.e. expr.ArtifactSubdir of it must be "".
+// TestRealiseCarveoutOutputsAreAlwaysFlat pins that every COMPILE-side
+// realise-mode probe's default output stays flat (compile-shaped, per
+// expr.ArtifactSubdir), which is what lets compile.go's own
+// realiseAndLink call site pass "" as the subdir unconditionally.
 //
-// realiseAndLink (compile.go) resolves its rebuilt output at
-// storePath + "/" + filepath.Base(output) — no FHS subdir lookup. mode.For
-// is keyed on the SOURCE path, so the property that actually needs to
-// hold is about the OUTPUT defaultOutputName derives from that source —
-// testing ArtifactSubdir of the source name itself is a different claim
-// and the wrong one (a first version of this test made exactly that
-// mistake and failed on cases that were never actually a problem).
-//
-// This is the third place the flat-vs-FHS bug shape lives (see storeInput
-// and PromoteToStore, both of which DO look up the subdir). This one is
-// safe today only because every realise-mode probe compiles to a .o or
-// stays extension-free, both of which ArtifactSubdir leaves flat — and
-// that is exactly what this test checks, rather than trusting the
-// docstring's word for it.
+// realiseAndLink no longer derives the subdir from the output's own
+// name at all (it used to, via expr.ArtifactSubdir — but that guessed
+// wrong for Kbuild's own vmlinux.o, a LINK output that happens to be
+// named like a compile one). Each of realiseAndLink's two call sites
+// now states its own Kind's real placement explicitly (compile.go: ""
+// always; link.go: "bin" always, per outSubdir()) — so this test's
+// claim is purely about these compile-side probes' own filenames,
+// pinned because a probe accidentally producing a non-flat output
+// would silently break compile.go's own "" call site.
 func TestRealiseCarveoutOutputsAreAlwaysFlat(t *testing.T) {
 	for _, source := range []string{
 		"conftest.c", "conftest.cpp",
@@ -347,8 +344,7 @@ func TestRealiseCarveoutOutputsAreAlwaysFlat(t *testing.T) {
 		out := defaultOutputName(source, nil)
 		if sub := expr.ArtifactSubdir(out); sub != "" {
 			t.Errorf("source %q compiles to %q by default, whose ArtifactSubdir "+
-				"is %q — realiseAndLink's flat filepath.Base(output) lookup no "+
-				"longer agrees with where the artifact actually landed",
+				"is %q, want flat (\"\") for a compile-side realise probe",
 				source, out, sub)
 		}
 	}
@@ -367,4 +363,244 @@ func TestRealiseCarveoutOutputsAreAlwaysFlat(t *testing.T) {
 	// ArtifactSubdir("conftest") is genuinely "bin" — the guard here is
 	// unreachability, not a flat name, and the two should not be
 	// conflated.
+}
+
+// TestIsKbuildElfProbe pins the Passthrough carveout for Kbuild's
+// scripts/mod/empty.o — see its call site in Compile for why this one
+// probe bypasses nixgg's graph entirely (mode.Realise's `nix build
+// --file` is incompatible with sandbox mode; this probe has no
+// headers and gains nothing from CA-hashing anyway) rather than using
+// mode.Realise's synchronous-build carveout the way a real autoconf/
+// cmake probe still does.
+func TestIsKbuildElfProbe(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   bool
+	}{
+		{"scripts/mod/empty.c", true},
+		{"scripts/mod/empty.o", true},
+		{"/build/linux-6.12/scripts/mod/empty.c", true},
+		{"empty.c", false},               // bare, outside scripts/mod/: an ordinary TU
+		{"scripts/mod/modpost.c", false}, // sibling in the same dir, not the probe itself
+		{"conftest.c", false},            // a different probe entirely, still mode.Realise's
+	} {
+		if got := isKbuildElfProbe(tc.source); got != tc.want {
+			t.Errorf("isKbuildElfProbe(%q) = %v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+// TestIsKbuildRealmodeObj pins the Passthrough carveout for Kbuild's
+// arch/x86/realmode/rm/{header,trampoline_32,trampoline_64,stack,
+// reboot}.o — moved here from mode.go's own isKbuildRealmodeObj for
+// the identical sandbox-mode reason isKbuildElfProbe was: confirmed
+// directly against a real sandboxed build, routed through
+// mode.Realise this hit the same "no substituter" failure empty.o
+// did.
+func TestIsKbuildRealmodeObj(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   bool
+	}{
+		{"arch/x86/realmode/rm/header.S", true},
+		{"arch/x86/realmode/rm/header.o", true},
+		{"arch/x86/realmode/rm/trampoline_32.S", true},
+		{"arch/x86/realmode/rm/trampoline_64.o", true},
+		{"arch/x86/realmode/rm/stack.o", true},
+		{"arch/x86/realmode/rm/reboot.o", true},
+		{"/build/linux-6.12/arch/x86/realmode/rm/reboot.o", true},
+		{"arch/x86/realmode/rm/realmode.lds.S", false}, // in the dir, but not a realmode-y member
+		{"arch/x86/kernel/head_32.S", false},           // outside the realmode/rm/ dir entirely
+	} {
+		if got := isKbuildRealmodeObj(tc.source); got != tc.want {
+			t.Errorf("isKbuildRealmodeObj(%q) = %v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+// TestIsKbuildVDSO32Obj pins the Passthrough carveout for Kbuild's
+// arch/x86/entry/vdso/vdso32/{note,system_call,sigreturn,
+// vclock_gettime,vgetcpu}.o. Confirmed directly against a real
+// sandboxed build: with these Passthrough'd, vdso32.so.dbg's own link
+// falls to RealiseThunkArgsAndPassthrough's Passthrough (a real,
+// unshimmed `ld`) instead of mode.ForLink's sandbox-incompatible
+// realiseAndLink — the same emergent fix realmode.elf's link already
+// gets from isKbuildRealmodeObj above.
+func TestIsKbuildVDSO32Obj(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   bool
+	}{
+		{"arch/x86/entry/vdso/vdso32/note.S", true},
+		{"arch/x86/entry/vdso/vdso32/system_call.S", true},
+		{"arch/x86/entry/vdso/vdso32/sigreturn.o", true},
+		{"arch/x86/entry/vdso/vdso32/vclock_gettime.o", true},
+		{"arch/x86/entry/vdso/vdso32/vgetcpu.c", true},
+		{"/build/linux-6.12/arch/x86/entry/vdso/vdso32/vgetcpu.o", true},
+		{"arch/x86/entry/vdso/vdso32/vdso32.lds.S", false}, // in the dir, but not a vobjs32-y member
+		{"arch/x86/entry/vdso/vclock_gettime.c", false},    // the 64-bit sibling, outside vdso32/
+	} {
+		if got := isKbuildVDSO32Obj(tc.source); got != tc.want {
+			t.Errorf("isKbuildVDSO32Obj(%q) = %v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+// TestParseCompileArgsCapturesDepfile pins depfile-path recovery for
+// the three shapes a compile invocation can request dependency
+// output in: Kbuild's comma-joined `-Wp,-MMD,<path>` (the actual form
+// scripts/Makefile.lib uses — NOT bare -MD/-MF, which is what an
+// earlier, wrong analysis assumed), the autotools-style explicit
+// `-MF <path>`, and bare `-MD`/`-MMD` with no `-MF` at all (gcc's own
+// documented default: the object's own path with .o replaced by .d).
+//
+// This path is what lets writeSynthesizedDepfile (see Compile) put a
+// substitute .d file exactly where Kbuild's `cmd_and_fixdep` macro
+// will look for it — get the path wrong and fixdep still hard-fails.
+func TestParseCompileArgsCapturesDepfile(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		args        []string
+		wantDepfile string
+	}{
+		{
+			name:        "Kbuild's real form: -Wp,-MMD,<path>",
+			args:        []string{"-Wp,-MMD,kernel/.foo.o.d", "-c", "foo.c", "-o", "foo.o"},
+			wantDepfile: "kernel/.foo.o.d",
+		},
+		{
+			name:        "-Wp with extra trailing option after the path",
+			args:        []string{"-Wp,-MMD,kernel/.foo.o.d,-MP", "-c", "foo.c", "-o", "foo.o"},
+			wantDepfile: "kernel/.foo.o.d",
+		},
+		{
+			name:        "explicit -MF",
+			args:        []string{"-MD", "-MF", "foo.d", "-c", "foo.c", "-o", "foo.o"},
+			wantDepfile: "foo.d",
+		},
+		{
+			name: "bare -MD with no -MF falls back to gcc's own default: obj with .d",
+			args: []string{"-MD", "-c", "foo.c", "-o", "foo.o"},
+			// gcc's default depfile is next to the OBJECT (foo.o -> foo.d),
+			// not the source — confirmed against gcc's own docs.
+			wantDepfile: "foo.d",
+		},
+		{
+			name:        "no dep flags at all: no depfile captured",
+			args:        []string{"-c", "foo.c", "-o", "foo.o"},
+			wantDepfile: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, depfile, _, ok := parseCompileArgs(tc.args)
+			if !ok {
+				t.Fatalf("parseCompileArgs bailed on %q", tc.args)
+			}
+			if depfile != tc.wantDepfile {
+				t.Errorf("depfile = %q, want %q (args %q)", depfile, tc.wantDepfile, tc.args)
+			}
+		})
+	}
+}
+
+// TestParseCompileArgsWpFlagsDoNotLeakIntoSandboxFlags pins that
+// -Wp,-MMD,... never reaches the sandbox compile's own flag list: the
+// path it carries is meaningless inside the sandbox (relative to
+// make's cwd, not the staged tree), and passing it through would make
+// the real compiler try to write there and fail.
+func TestParseCompileArgsWpFlagsDoNotLeakIntoSandboxFlags(t *testing.T) {
+	_, _, _, flags, ok := parseCompileArgs([]string{
+		"-Wp,-MMD,kernel/.foo.o.d", "-O2", "-c", "foo.c", "-o", "foo.o",
+	})
+	if !ok {
+		t.Fatal("parseCompileArgs bailed unexpectedly")
+	}
+	for _, f := range flags {
+		if strings.HasPrefix(f, "-Wp,") {
+			t.Errorf("-Wp,... flag leaked into sandbox flags: %q", flags)
+		}
+	}
+	if !reflect.DeepEqual(flags, []string{"-O2"}) {
+		t.Errorf("flags = %q, want just [-O2]", flags)
+	}
+}
+
+// TestWriteSynthesizedDepfileSatisfiesRealFixdep runs the REAL Linux
+// kernel `fixdep` binary (built from upstream scripts/basic/fixdep.c,
+// vendored under testdata/fixdep for exactly this test — see
+// testdata/fixdep/README) against a depfile produced by
+// writeSynthesizedDepfile, using a real on-disk header instead of a
+// hand-typed path list.
+//
+// This is the same experiment run manually during research (see the
+// project's own plan-mode notes on the fixdep gap): fixdep doesn't
+// care whether a .d file's dependency list came from genuine `-MD`
+// compiler output or was synthesized from scan's own header list — it
+// only requires that every listed path be real and readable, which is
+// exactly what scan.Run always produces. Guards against a regression
+// in writeSynthesizedDepfile's own Makefile-rule syntax silently
+// breaking Kbuild's `cmd_and_fixdep` step.
+func TestWriteSynthesizedDepfileSatisfiesRealFixdep(t *testing.T) {
+	fixdepBin := buildFixdep(t)
+
+	dir := t.TempDir()
+	header := filepath.Join(dir, "header.h")
+	if err := os.WriteFile(header, []byte("#ifdef CONFIG_FOO\nint x;\n#endif\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "foo.c")
+	if err := os.WriteFile(source, []byte(`#include "header.h"`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	depfile := filepath.Join(dir, "foo.o.d")
+	output := filepath.Join(dir, "foo.o")
+
+	if err := writeSynthesizedDepfile(depfile, output, source, []scan.Header{
+		{Abs: header, Rel: "header.h"},
+	}); err != nil {
+		t.Fatalf("writeSynthesizedDepfile: %v", err)
+	}
+
+	cmd := exec.Command(fixdepBin, depfile, "foo.o", "cc -c foo.c -o foo.o")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = string(ee.Stderr)
+		}
+		t.Fatalf("real fixdep rejected the synthesized depfile: %v\n%s", err, stderr)
+	}
+	cmdOut := string(out)
+	if !strings.Contains(cmdOut, "savedcmd_foo.o := cc -c foo.c -o foo.o") {
+		t.Errorf("fixdep output missing expected savedcmd_ line:\n%s", cmdOut)
+	}
+	if !strings.Contains(cmdOut, "include/config/FOO") {
+		t.Errorf("fixdep did not extract CONFIG_FOO from the synthesized header "+
+			"dependency — it never read the header, meaning the synthesized "+
+			"depfile's path wasn't recognized as real:\n%s", cmdOut)
+	}
+}
+
+// buildFixdep compiles the vendored, real upstream fixdep.c (see
+// testdata/fixdep/) with the host's cc, skipping the test if no C
+// compiler is available on PATH — CI's go-vet/go-test job runs with
+// CGO_ENABLED=0 but still has a real `cc` on PATH for this, same as
+// TestBatchArchiveScriptThinArchiveSurvivesObjectDeletion's own
+// "ar not on PATH" skip in internal/expr/batcharchive_test.go.
+func buildFixdep(t *testing.T) string {
+	t.Helper()
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		cc, err = exec.LookPath("gcc")
+	}
+	if err != nil {
+		t.Skip("no C compiler on PATH to build the real fixdep binary")
+	}
+	bin := filepath.Join(t.TempDir(), "fixdep")
+	cmd := exec.Command(cc, "-I", "testdata/fixdep", "-o", bin, "testdata/fixdep/fixdep.c")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building real fixdep: %v\n%s", err, out)
+	}
+	return bin
 }

@@ -1,5 +1,5 @@
 // nixgg is a busybox-style multi-call binary: the same ELF is symlinked
-// into shims/{cc,gcc,c++,g++,ar,ranlib}, and dispatches by argv[0].
+// into shims/{cc,gcc,c++,g++,ar,ranlib,ld}, and dispatches by argv[0].
 // When invoked as its own name it acts as the CLI (run/eval/force/build/
 // emit/stats/env).
 package main
@@ -49,6 +49,14 @@ func run() error {
 	switch tool {
 	case dispatch.ToolAR:
 		return shim.Archive(args, cfg, l)
+	case dispatch.ToolLD:
+		// Raw `ld` (Kbuild's cmd_ld: `$(LD) $(ld_flags) $(real-prereqs)
+		// -o $@`) is always link-shaped — there's no compile mode to
+		// dispatch on the way cc/g++ have. Link's own parser already
+		// handles ld's bare (non `-Wl,`-wrapped) flag spellings, since
+		// it was written flag-family-agnostic from the start (bare -T,
+		// bare --start-group/--end-group).
+		return shim.Link(tool, args, cfg, l)
 	case dispatch.ToolRanlib:
 		// ranlib on our thunk/store outputs would need to open+modify a
 		// file we don't own. Real ranlib on a real .a would be

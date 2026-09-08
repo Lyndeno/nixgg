@@ -24,6 +24,7 @@ const (
 	ToolGXX
 	ToolAR
 	ToolRanlib
+	ToolLD
 )
 
 // Basename returns the argv[0] name we advertise to the sandbox.
@@ -43,6 +44,8 @@ func (t Tool) Basename() string {
 		return "ar"
 	case ToolRanlib:
 		return "ranlib"
+	case ToolLD:
+		return "ld"
 	}
 	return ""
 }
@@ -102,6 +105,8 @@ func FromArgv0(argv0 string) Tool {
 		return ToolAR
 	case "ranlib":
 		return ToolRanlib
+	case "ld", "ld.bfd", "ld.gold", "ld.lld":
+		return ToolLD
 	}
 	return ToolUnknown
 }

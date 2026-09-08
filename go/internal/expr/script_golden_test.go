@@ -549,6 +549,90 @@ func TestLinkScriptGroupWrapsInputs(t *testing.T) {
 				"around nothing:\n%s", s)
 		}
 	})
+
+	t.Run("raw ld tool uses bare group brackets, not -Wl,", func(t *testing.T) {
+		// A raw `ld` invocation (Linux Kbuild's own vmlinux.o link —
+		// see isRawLinker's own docstring) rejects -Wl,--start-group
+		// outright ("unrecognized option"); only cc/gcc/clang-driven
+		// links use the -Wl, spelling, which is what mk's default
+		// Tool: "cc" already pins above.
+		d := mk(true, []string{"-O2"})
+		d.Tool = "ld"
+		s := d.script()
+		if strings.Contains(s, "-Wl,--start-group") || strings.Contains(s, "-Wl,--end-group") {
+			t.Errorf("raw ld got the driver spelling -Wl,--start-group; "+
+				"ld itself rejects this:\n%s", s)
+		}
+		if !strings.Contains(s, "--start-group") || !strings.Contains(s, "--end-group") {
+			t.Errorf("raw ld missing the bare --start-group/--end-group it needs:\n%s", s)
+		}
+	})
+}
+
+// TestLinkScriptWholeArchiveWrapsOnlyNamedInputs pins that
+// WholeArchiveInputs wraps EXACTLY the named inputs, unlike
+// GroupInputs' single global span — modeled directly on Linux
+// Kbuild's own vmlinux.o link (scripts/Makefile.vmlinux_o's
+// cmd_ld_vmlinux.o: `--whole-archive vmlinux.a --no-whole-archive
+// --start-group $(KBUILD_VMLINUX_LIBS) --end-group`), the real
+// recipe this was written against.
+func TestLinkScriptWholeArchiveWrapsOnlyNamedInputs(t *testing.T) {
+	mk := func() *Derivation {
+		return &Derivation{
+			Kind: KindLink, Tool: "ld", OutName: "vmlinux.o",
+			Coreutils: fakeCoreutils, Compiler: fakeCompiler, Bash: fakeBash,
+			GroupInputs:        true,
+			WholeArchiveInputs: []string{"vmlinux.a"},
+			Inputs: []derivInput{
+				{InputKind: "store", Ref: fakeObj, Name: "vmlinux.a"},
+				{InputKind: "store", Ref: fakeArchive, Name: "lib.a"},
+			},
+		}
+	}
+
+	t.Run("only the named input is wrapped", func(t *testing.T) {
+		s := mk().script()
+		wStart := strings.Index(s, "--whole-archive")
+		wEnd := strings.Index(s, "--no-whole-archive")
+		vmlinuxA := strings.Index(s, "vmlinux.a")
+		libA := strings.Index(s, "lib.a'")
+		if wStart < 0 || wEnd < 0 {
+			t.Fatalf("whole-archive brackets missing:\n%s", s)
+		}
+		if !(wStart < vmlinuxA && vmlinuxA < wEnd) {
+			t.Errorf("--whole-archive does not span vmlinux.a (wStart=%d vmlinuxA=%d wEnd=%d)\n%s",
+				wStart, vmlinuxA, wEnd, s)
+		}
+		if wStart < libA && libA < wEnd {
+			t.Errorf("--whole-archive wrongly spans lib.a too — its scope must stay "+
+				"narrow, unlike --start-group's own widened span:\n%s", s)
+		}
+	})
+
+	t.Run("coexists with GroupInputs' own separate, wider span", func(t *testing.T) {
+		s := mk().script()
+		gStart := strings.LastIndex(s, "--start-group")
+		gEnd := strings.Index(s, "--end-group")
+		if gStart < 0 || gEnd < 0 {
+			t.Fatalf("group brackets missing alongside whole-archive:\n%s", s)
+		}
+		firstIn := strings.Index(s, "vmlinux.a")
+		lastIn := strings.LastIndex(s, "lib.a'")
+		if !(gStart < firstIn && lastIn < gEnd) {
+			t.Errorf("--start-group/--end-group does not span every input "+
+				"(gStart=%d firstIn=%d lastIn=%d gEnd=%d)\n%s",
+				gStart, firstIn, lastIn, gEnd, s)
+		}
+	})
+
+	t.Run("no WholeArchiveInputs is unaffected", func(t *testing.T) {
+		d := mk()
+		d.WholeArchiveInputs = nil
+		s := d.script()
+		if strings.Contains(s, "whole-archive") {
+			t.Errorf("whole-archive brackets emitted with no WholeArchiveInputs set:\n%s", s)
+		}
+	})
 }
 
 // TestLinkScriptStagesInlineFiles pins that InlineFilesStore (a

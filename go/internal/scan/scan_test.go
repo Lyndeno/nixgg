@@ -2,6 +2,7 @@ package scan
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -271,5 +272,115 @@ func TestCommonAncestor(t *testing.T) {
 				t.Errorf("commonAncestor(%q) = %q, want %q", tc.dirs, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestIsAssemblySource pins the extension check that gates the
+// .incbin scan pass — must match compile.go's own isSource assembly
+// recognition (.s/.S), not a broader or narrower set.
+func TestIsAssemblySource(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   bool
+	}{
+		{"foo.s", true},
+		{"foo.S", true},
+		{"dir/foo.S", true},
+		{"foo.c", false},
+		{"foo.cpp", false},
+		{"foo.h", false},
+		{"foo", false},
+	} {
+		if got := isAssemblySource(tc.source); got != tc.want {
+			t.Errorf("isAssemblySource(%q) = %v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+// TestRunScannerFindsIncbinTargets is a regression test for a real
+// gap found against a real Linux kernel build: Linux Kbuild's own
+// arch/x86/realmode/rmpiggy.S uses GNU as's `.incbin "path"` directive
+// to embed a previously-built binary blob into a later object file.
+// `.incbin` is processed by the ASSEMBLER after preprocessing, so
+// gcc's own `-M`/`-MM` (which tracks only what the PREPROCESSOR
+// consumed — #include, never .incbin) silently omits it — confirmed
+// directly against real gcc: no error, no warning, the incbin'd file
+// just never appears in the dependency list. Without this, the
+// compile shim never stages the incbin target into the TU's sandbox,
+// and the real, deferred compile fails with "file not found" for a
+// file that exists right there in the caller's own build tree —
+// confirmed directly against a real kernel build before this fix.
+//
+// Uses the REAL system compiler (skips if none on PATH), not a fake
+// script, because what's under test is real `as --MD` behavior
+// (binutils' own dependency-output flag, unrelated to gcc's -M
+// family) — a fake compiler script can't stand in for that without
+// just reimplementing the thing being tested.
+// realCCForTest finds a REAL compiler binary, bypassing nixgg's own
+// shims even when this test runs inside `nixgg develop` (where a bare
+// "cc"/"gcc" on PATH IS the shim, not the real tool — using it would
+// make this test exercise the shim's own compile path instead of
+// as's real --MD behavior, and the shim's own placeholder-thunk
+// output would confuse a plain compile probe like this one).
+// NIXGG_COMPILER_ROOT (set by `nixgg env` / the dev shell) points at
+// the real gcc-wrapper root when present; otherwise fall back to a
+// plain PATH lookup, skipping if neither yields a compiler.
+func realCCForTest(t *testing.T) string {
+	t.Helper()
+	if root := os.Getenv("NIXGG_COMPILER_ROOT"); root != "" {
+		if p := filepath.Join(root, "bin", "gcc"); fileExists(p) {
+			return p
+		}
+	}
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		cc, err = exec.LookPath("gcc")
+	}
+	if err != nil {
+		t.Skip("no C compiler available to exercise real as --MD behavior")
+	}
+	return cc
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func TestRunScannerFindsIncbinTargets(t *testing.T) {
+	cc := realCCForTest(t)
+
+	dir := t.TempDir()
+	blob := filepath.Join(dir, "blob.bin")
+	if err := os.WriteFile(blob, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(dir, "wrapper.S")
+	asm := "\t.section \".data\"\n\t.incbin \"blob.bin\"\n"
+	if err := os.WriteFile(src, []byte(asm), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(prev)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	r, _, err := runScanner(cc, "wrapper.S", nil)
+	if err != nil {
+		t.Fatalf("runScanner: %v", err)
+	}
+	found := false
+	for _, h := range r.Headers {
+		if h.Rel == "blob.bin" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf(".incbin target blob.bin missing from scan result headers: %+v", r.Headers)
 	}
 }

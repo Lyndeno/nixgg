@@ -174,7 +174,7 @@ nixgg/
 │   ├── go.mod                  no external deps; stdlib only
 │   └── internal/               (listed below)
 ├── bin/nixgg                   built static ELF (git-ignored)
-├── shims/                      symlinks: cc, gcc, c++, g++, ar, ranlib → ../bin/nixgg
+├── shims/                      symlinks: cc, gcc, c++, g++, ar, ranlib, ld → ../bin/nixgg
 ├── nix/
 │   ├── builder.nix             per-TU CA derivation (native mode)
 │   ├── linker.nix              link CA derivation (native mode)
@@ -452,6 +452,12 @@ realise synchronously. Purely filename-driven, no env var:
 
 Every pattern here was added because a real project tripped it.
 
+`mode.Realise`'s own mechanism (a synchronous `nix build --file`) only
+works in native mode — see "Sandbox mode has no synchronous-realize
+operation" under "What we don't (yet) do" for why, and for the sibling
+carveout (`mode.ForLink`, link-shim-only) that Linux Kbuild's
+`examples/linux-kernel` needed.
+
 ## Output layout (FHS)
 
 Artifacts land where the rest of the Nix ecosystem expects them:
@@ -583,6 +589,68 @@ see "What we don't (yet) do", now resolved below).
   `thin-archive-equivalence.sh` alike.
 
 ## What we don't (yet) do
+
+- **Sandbox mode has no synchronous-realize operation** — confirmed
+  architecturally impossible with builder-rpc-v0 as it exists today,
+  not just unimplemented. Native mode has two mechanisms that build a
+  single output synchronously, mid-shim, when a downstream unshimmed
+  tool needs real bytes back before `make` continues: `mode.Realise`/
+  `mode.ForLink`'s own `nix build --file` (conftests, cmake probes,
+  Linux Kbuild's `realmode.elf`/`vdso32.so.dbg`/`modpost`), and
+  `RealiseThunkArgsAndPassthrough`'s force-realize-then-Passthrough
+  (thin-archive members a Passthrough'd `ar`/`ld` would otherwise read
+  as dangling `.nix` paths). Neither has a sandbox-mode equivalent:
+  confirmed directly at the pinned Nix daemon's own source
+  (`src/libstore/daemon.cc`'s `performOp`), a `builder-rpc-v0`
+  sandbox's op allowlist for a `RecursiveSubmitted` connection is
+  exactly `AddToStore{,Multiple,Nar,Scanning}`, `SubmitOutput`,
+  `AddTempRoot`, `IsValidPath` — no `BuildDerivation`, no
+  `BuildPaths`, any other op throws `"Operation %d not allowed inside
+  derivation"`. Deliberate upstream design ("to reduce opportunities
+  for nonreproducibility in builds"), not a client-side gap this
+  package could close by writing more protocol code.
+
+  Found via `examples/linux-kernel`: Kbuild's own recipe shape chains
+  several synchronous mid-build reads of just-produced artifacts, one
+  after another (modpost execed directly, `objcopy -j .modinfo` on
+  vmlinux.o, `nm`+`sorttable` on vmlinux itself) — none of which a
+  single sandbox-mode derivation can satisfy, since every nixgg
+  output is a REGISTERED drv, not real bytes, until Nix's own outer
+  scheduler resolves it, which only happens after that derivation's
+  build script exits.
+
+  **Worked around, not closed**: `examples/linux-kernel` now builds
+  in sandbox mode via a genuine two-phase `mkNixggBuild` split — a
+  phase boundary is the one thing that DOES cross this wall, because
+  a second derivation's `buildInputs` forces Nix to resolve the first
+  derivation's declared targets to real bytes before the second
+  derivation's build script even starts. The subtlety: the CONSUMING
+  derivation's own final step can't route through `mkNixggBuild`'s
+  own dyn-drv `targets` mechanism either, for the identical reason
+  one level down — that mechanism is itself "register now, resolve
+  later," so a script that submits an output and then reads it back
+  synchronously (as vmlinux's own `nm`/`sorttable` pass needs to) hits
+  the same wall self-inflicted. Confirmed directly: routing phase 2's
+  `ld`/`nm`/`sorttable` sequence through mkNixggBuild submitted
+  `vmlinux` correctly as a registered drv, but the immediately-
+  following `nm -n vmlinux` in the same script read the still-
+  unresolved drvref-stub marker. Fixed by making phase 2 a PLAIN
+  `stdenv.mkDerivation` instead — `ld`/`nm`/`sorttable` need no nixgg
+  acceleration (each runs exactly once), so a derivation with no nixgg
+  shims on PATH at all sidesteps the wall entirely rather than
+  crossing it. See `examples/linux-kernel`'s own docstring for the
+  full fix history.
+
+  This resolves the wall for fixtures whose own recipe shape allows a
+  clean phase boundary (a stopping point before the first synchronous
+  read-back, reachable via ordinary `buildInputs`). It does NOT make
+  sandbox mode's synchronous-realize gap disappear in general — a
+  build whose synchronous read-back happens EARLIER, interleaved with
+  work that still needs nixgg's own per-TU acceleration on both sides
+  of the read, would still need real upstream protocol work (a
+  sandboxed build op) to resolve without a phase split, which remains
+  out of scope for this repo to drive alone.
+
 
 - ~~Warm-path drv memoization for sandbox mode~~ — **resolved**.
   `internal/rpc` speaks the Nix worker protocol directly over the
@@ -821,6 +889,163 @@ see "What we don't (yet) do", now resolved below).
   `tests/thin-archive-equivalence.sh` is this whole mechanism's own
   dedicated native/sandbox drv-equivalence check, on a minimal 3-file
   fixture (`examples/thin-archive`) rather than QEMU's real scale.
+
+- ~~`classifyInputs` deduplicated a caller's own deliberate input
+  repeat~~ — **resolved**. `classifyInputs` deduplicated every link/
+  archive input by (Kind,Ref,Name) — correct for the EXTRA
+  (dependency-only, thin-archive-member) list, where a duplicate really
+  is redundant, but wrongly applied to the PRIMARY list too, where a
+  caller's own repeat can be load-bearing. Found on a plain, unmodified
+  checkout of master (confirmed via `git stash` — unrelated to any
+  in-flight change), building `llvm-min-tblgen`: CMake's own real,
+  generated link line lists `libLLVMSupport.a libLLVMTableGen.a
+  libLLVMSupport.a` — Support repeated AFTER TableGen, which is CMake's
+  OWN fix for plain (non `--start-group`) `ld`'s left-to-right archive
+  resolution (TableGen's objects need symbols FROM Support, so Support
+  must be rescanned after it). The second occurrence was silently
+  dropped, and the link failed with `undefined reference to
+  llvm::FoldingSetBase::...` — `ld` never got the second scan pass it
+  needed.
+
+  Fixed by splitting the dedup helpers: `appendLinkNoDedup`/
+  `appendJSONNoDedup` (new) preserve every primary-list repeat
+  verbatim; `appendLinkDedup`/`appendJSONDedup` (unchanged) still
+  dedup, but only for `expandMembers`' own extra-list appends. Neither
+  native mode's `derivInputsList` nor sandbox mode's `toJSON` rendering
+  needed changes — both already render `d.Inputs` by iterating the
+  slice directly (no incidental dedup at that layer), and sandbox
+  mode's `inputs.drvs`/`inputs.srcs` declaration set (a real map,
+  correctly deduplicated for Nix's own mount-once semantics) was never
+  the thing carrying the repeat — the rendered SCRIPT TEXT is. Verified
+  end to end: rebuilt `llvm-min-tblgen` (links cleanly), then the full
+  3-phase `llvm` fixture, then ran the real resulting `llc --version`
+  (LLVM 19.1.7, X86 target registered).
+
+- ~~No `ld` dispatch role~~ — **resolved**. Dispatch previously
+  recognized only 6 roles (cc/gcc/clang, c++/g++/clang++, ar,
+  ranlib); an invocation of raw `ld`/`ld.bfd`/`ld.gold`/`ld.lld` —
+  argv0 dispatch never routes through `cc` at all for these — fell
+  through unrecognized to the real, unshimmed system linker, which
+  then reads whatever the caller's own inputs actually are on disk:
+  a placeholder thunk symlink instead of real bytes, for anything
+  nixgg was deferring. Found while exploring Linux Kbuild as a
+  fixture: `scripts/Makefile.lib`'s `cmd_ld = $(LD) $(ld_flags)
+  $(real-prereqs) -o $@` is the standard rule for `vmlinux` itself
+  AND for `arch/x86/realmode/rm/realmode.elf` (built unconditionally
+  — `obj-y`, config-independent — on every x86_64 build), so this
+  wasn't a corner case specific to one config knob.
+
+  Fixed by adding `dispatch.ToolLD` and dispatching it straight to
+  the EXISTING `shim.Link` — no new shim entrypoint needed.
+  `parseLinkArgs`/`linkerScriptPath`/`isGroupBracket` were already
+  written flag-family-agnostic (bare `-T <path>`, bare
+  `--start-group`/`--end-group`, no `-Wl,`-wrapper assumed anywhere
+  in the parser), because nothing in their own logic actually
+  depends on being invoked via a gcc-style driver rather than the
+  linker directly. `Tool.Basename()`'s existing generic resolution
+  (`realToolFor`) already finds the real `ld` next to `ar`/`ranlib`
+  in the pinned gcc-wrapper's own `bin/` — the same directory
+  `realARFor` already resolves `ar` from. The only genuinely new
+  piece was the on-disk symlink: `flake.nix`'s shims-farm
+  `postInstall` had to gain `ld`/`ld.bfd`/`ld.gold`/`ld.lld` (+
+  triple-prefixed spellings) alongside the pre-existing six, since
+  dispatch code alone doesn't create the busybox-style symlinks a
+  build actually finds on PATH.
+
+  ~~**Known remaining gap, not yet fixed**: a link's output can be
+  immediately consumed by an UNSHIMMED tool...~~ — **resolved**.
+  `mode.ForLink(path)` is a new, narrow, link-shim-only sibling to
+  `mode.For` (which only `compile.go` ever consulted — see that
+  function's own docstring for why link/archive didn't consult it
+  before). `link.go`'s `Link()` checks `mode.ForLink(output) ==
+  mode.Realise` right where the native-mode thunk is normally
+  written, and calls the SAME `realiseAndLink` `compile.go` already
+  had for conftest/cmake probes — `nix build --file` synchronously,
+  re-target the output symlink at real store bytes. Two real,
+  project-confirmed patterns:
+
+  - `arch/x86/realmode/rm/realmode.elf` — `arch/x86/tools/relocs`
+    reads it as raw ELF immediately after linking, in the same
+    recursive make.
+  - `arch/x86/entry/vdso/{vdso32,vdsox32}.so.dbg` — the SAME link
+    recipe's own `checkundef.sh` runs `nm` against it synchronously,
+    and a later `objcopy`/`readelf` pass (producing the final `.so`)
+    reads it again.
+
+  `realiseAndLink`'s own flat-basename assumption ("link never
+  reaches this, compile outputs are always flat") was real but went
+  stale the moment a link output could reach it — fixed to resolve
+  via `expr.ArtifactSubdir` generically (a link output's subdir is
+  `"bin"`, not flat) rather than assuming. Verified end-to-end against
+  a real tinyconfig `vmlinux` build: both `realmode.elf`→`relocs` and
+  the entire vdso32 chain (link→checkundef→objcopy→readelf) build
+  clean with zero ELF errors — a complete regression from before this
+  fix, confirmed by re-running the identical build before and after.
+
+  A second, unrelated bug surfaced while validating vdso32.so.dbg
+  specifically: Kbuild's own `-soname linux-gate.so.1` (raw ld's
+  two-token DT_SONAME flag) was never recognized by `parseLinkArgs`,
+  so the bare value `linux-gate.so.1` fell through to
+  `isSharedLib`'s deliberately-generous `.so.N` version-suffix match
+  (needed to catch real positional `libfoo.so.1.2.3` inputs) and got
+  misclassified as a link INPUT rather than skipped as `-soname`'s own
+  argument — `classifyInputs` correctly reported it absent (it names
+  nothing on disk; it's pure ELF metadata) and the whole link fell to
+  Passthrough. Fixed with a `-soname <name>` case in `parseLinkArgs`,
+  same two-token shape as the pre-existing `-L`/`-MF` handling.
+
+  ~~**Still open, found while validating this fix and deliberately NOT
+  attempted**: a deeper, cross-cutting hazard in Passthrough's own
+  contract...~~ — **resolved**. `RealiseThunkArgsAndPassthrough`
+  (`go/internal/shim/passthrough.go`) replaces every bare `Passthrough`
+  call at a "can't model this, give up" site in both `archive.go` and
+  `link.go`: it scans every argv token, realizes any that classify as
+  one of nixgg's own not-yet-realized native-mode thunks (via
+  `realise.Realise`, the same engine `nixgg force` uses), THEN execs
+  the real tool. Confirmed directly against a real Linux kernel build:
+  `ar cDPrST built-in.a <14 real nixgg thunks> <1 genuinely empty,
+  already-real sibling archive>` — the one unmodelable sibling used to
+  send the WHOLE call to Passthrough with the other 14 siblings STILL
+  as placeholder thunk symlinks; thin mode's own "store the path,
+  don't read the content" semantics meant real `ar` succeeded anyway,
+  silently baking `.nixgg/thunks/<id>.nix` paths into the archive as
+  if they were real members. After the fix, every reachable case in a
+  real, deep (many nesting levels) kernel build correctly force-
+  realizes first (`[nixgg force] ... -> /nix/store/...`), and the
+  resulting archives/links contain real bytes throughout. Sandbox mode
+  is a deliberate no-op (realizing a single registered drv on demand
+  has no existing mechanism to reuse, and no sandbox-mode fixture has
+  hit this yet).
+
+  `archive.go`'s own `ar mPi<N>`-style positional-argument misparse
+  (`TestParseARArgsPositionalCountIsMisparsed`) is unaffected by this
+  fix and remains open — same known, documented, deliberately-unfixed
+  gap it always was; the fix above addresses a DIFFERENT failure mode
+  (unrealized siblings), not that one.
+
+- ~~`.incbin` targets invisible to header scanning~~ — **resolved**.
+  Linux Kbuild's `arch/x86/realmode/rmpiggy.S` uses GNU as's `.incbin
+  "path"` directive to embed a previously-built binary blob
+  (`realmode.bin`/`realmode.relocs`) into a later object file.
+  `.incbin` is processed by the ASSEMBLER, after preprocessing — gcc's
+  own `-M`/`-MM` (which tracks only what the PREPROCESSOR consumed,
+  i.e. `#include`) never sees it: confirmed directly, no error, no
+  warning, the file is just silently absent from the dependency list.
+  Without staging it into the TU's own sandbox, the real (deferred)
+  compile fails with "file not found" for a file that genuinely
+  exists in the caller's build tree.
+
+  Fixed in `go/internal/scan/scan.go`: `isAssemblySource` gates a
+  second real-compile scan pass (`scanIncbinTargets`) onto `.s`/`.S`
+  sources, using `-Wa,--MD=/dev/stdout -o /dev/null` — binutils `as`'s
+  OWN dependency-output flag (distinct from, and unrelated to, gcc's
+  `-M` family) — confirmed via a real experiment to correctly list
+  `.incbin` targets alongside the source. The resulting tokens flow
+  into the exact same resolution/staging pipeline ordinary headers
+  already use — `Header{Abs,Rel}` was already generic enough that no
+  new staging mechanism was needed. Verified against a real kernel
+  build: the `.incbin`/`rmpiggy`/`realmode.bin` "file not found"
+  failure is completely gone afterward.
 
 - ~~Multi-target dyn-drv builds~~ — **resolved**. `mkNixggBuild`
   used to submit exactly one final drv; a project with multiple

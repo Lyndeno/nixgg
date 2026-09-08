@@ -117,20 +117,33 @@ func storeInput(c classify.Result, callerPath string) (expr.Input, expr.JSONDrvI
 // never into the build script text — see Derivation.ExtraInputs'
 // docstring.
 //
-// Every append — the caller's own argv-derived entries AND anything
-// expandMembers adds — goes through the same dedup helpers, keyed on
-// Kind+Ref+Name, and sharing ONE seen-map per wire format across both
-// the primary and extra slices (so a member that's already an
-// explicit argv input on this same line isn't redundantly declared a
-// second time as a dependency-only extra). This matters even for
-// today's non-thin case in principle (the same input named twice on
-// one argv), but it becomes load-bearing here: the SAME member is
-// reachable through two different thin archives on one link line, and
-// native mode's derivInputsList renders its slice with no dedup of
-// its own (unlike sandbox mode's toJSON, which already deduplicates
-// via map/seenSrc) — an undeduplicated classifyInputs result would
-// make native and sandbox mode's rendered scripts diverge, exactly
-// the class of bug tests/drv-equivalence.sh exists to catch.
+// The PRIMARY lists (Link/JSON) preserve every occurrence from the
+// caller's own argv, including repeats — deduplicating them was a
+// real regression found against a real LLVM build: CMake's own
+// generated link line for llvm-min-tblgen lists `libLLVMSupport.a
+// libLLVMTableGen.a libLLVMSupport.a` (Support repeated AFTER
+// TableGen), which is CMake's OWN answer to plain `ld`'s left-to-right,
+// no-`--start-group` archive resolution — TableGen's objects need
+// symbols FROM Support, so Support must appear again after it. Before
+// this fix, the second occurrence was silently dropped, producing
+// "undefined reference to llvm::FoldingSetBase::..." at link time —
+// wrong output, not a passthrough or an error, so it went unnoticed
+// until a real end-to-end LLVM build caught it. The PRIMARY lists are
+// keyed by (still-tracked, just never checked to skip) seenLink/
+// seenJSON maps for a different reason: expandMembers below must know
+// which entries are ALREADY explicit primary inputs, so it doesn't
+// redundantly re-declare one of them a second time as a dependency-
+// only extra — see expandMembers' own docstring on why THAT case is a
+// real bug (duplicate dependency declarations render differently
+// across native's list-based vs sandbox's map-based wire format).
+//
+// The EXTRA lists (ExtraLink/ExtraJSON, populated only by
+// expandMembers) DO dedup — that's the one place a duplicate is
+// actually wrong: a thin archive's own member reachable through two
+// different sibling thin archives on one link line must be declared
+// as a dependency exactly once, not once per archive that references
+// it (see expandMembers' own docstring for the concrete regression
+// this prevents).
 type classifiedInputs struct {
 	Link      []expr.Input
 	ExtraLink []expr.Input
@@ -157,8 +170,8 @@ func classifyInputs(
 		switch c.Kind {
 		case classify.Store:
 			ni, ji := storeInput(c, in)
-			appendLinkDedup(&ci.Link, seenLink, ni)
-			appendJSONDedup(&ci.JSON, seenJSON, ji)
+			appendLinkNoDedup(&ci.Link, seenLink, ni)
+			appendJSONNoDedup(&ci.JSON, seenJSON, ji)
 			// c.ThunkID is only set for a promoted (force-realised)
 			// native-mode output — the one way a Store classification
 			// can still be one of OUR OWN archives rather than a
@@ -169,7 +182,7 @@ func classifyInputs(
 				expandMembers(l, c.ThunkID, &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
 			}
 		case classify.Thunk:
-			appendLinkDedup(&ci.Link, seenLink, expr.Input{
+			appendLinkNoDedup(&ci.Link, seenLink, expr.Input{
 				Kind: "nix", Ref: c.Ref, Name: filepath.Base(in),
 			})
 			expandMembers(l, thunkKeyFromRef(c.Ref), &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
@@ -189,7 +202,7 @@ func classifyInputs(
 			if c.Sub != "" {
 				name = c.Sub
 			}
-			appendJSONDedup(&ci.JSON, seenJSON, expr.JSONDrvInput{
+			appendJSONNoDedup(&ci.JSON, seenJSON, expr.JSONDrvInput{
 				Kind: "drv", Ref: c.Ref, Name: name,
 			})
 			expandMembers(l, expr.StoreBasename(c.Ref), &ci.ExtraLink, &ci.ExtraJSON, seenLink, seenJSON, archKeys)
@@ -249,8 +262,31 @@ func thunkKeyFromRef(ref string) string {
 	return strings.TrimSuffix(filepath.Base(ref), ".nix")
 }
 
+// appendLinkNoDedup/appendJSONNoDedup append a PRIMARY input
+// unconditionally — the caller's own argv repeats are real
+// (CMake's own archive-reordering idiom; see classifiedInputs' own
+// docstring) and must survive verbatim. They still mark the
+// Kind+Ref+Name key as seen, so expandMembers (which DOES dedup, via
+// appendLinkDedup/appendJSONDedup below) knows this entry is already
+// an explicit primary input and won't re-declare it as a redundant
+// dependency-only extra.
+func appendLinkNoDedup(dst *[]expr.Input, seen map[string]bool, in expr.Input) {
+	seen[in.Kind+"|"+in.Ref+"|"+in.Name] = true
+	*dst = append(*dst, in)
+}
+
+func appendJSONNoDedup(dst *[]expr.JSONDrvInput, seen map[string]bool, in expr.JSONDrvInput) {
+	seen[in.Kind+"|"+in.Ref+"|"+in.Name] = true
+	*dst = append(*dst, in)
+}
+
 // appendLinkDedup/appendJSONDedup append iff this exact (Kind, Ref,
-// Name) triple hasn't been added to this call's result yet.
+// Name) triple hasn't been added to this call's result yet. Used ONLY
+// by expandMembers for the EXTRA (dependency-only) lists — a thin
+// archive's member reachable through two different sibling thin
+// archives on one link line must be declared as a dependency exactly
+// once. NOT used for primary inputs — see classifiedInputs' own
+// docstring for why deduplicating those was a real regression.
 func appendLinkDedup(dst *[]expr.Input, seen map[string]bool, in expr.Input) {
 	key := in.Kind + "|" + in.Ref + "|" + in.Name
 	if seen[key] {

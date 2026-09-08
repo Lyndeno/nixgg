@@ -62,19 +62,20 @@ func Link(p LinkParams) string {
 
 func linkDerivation(p LinkParams) *Derivation {
 	return &Derivation{
-		Kind:             KindLink,
-		Name:             p.Name,
-		Tool:             p.Tool,
-		OutName:          p.OutName,
-		Inputs:           inputsToDeriv(p.Inputs),
-		ExtraInputs:      inputsToDeriv(p.ExtraInputs),
-		Flags:            p.Flags,
-		GroupInputs:      p.GroupInputs,
-		InlineFilesStore: p.InlineFilesStore,
-		AbsFilePath:      p.AbsFilePath,
-		AbsFileContent:   p.AbsFileContent,
-		StoreDeps:        p.StoreDeps,
-		WrapperEnv:       p.WrapperEnv,
+		Kind:               KindLink,
+		Name:               p.Name,
+		Tool:               p.Tool,
+		OutName:            p.OutName,
+		Inputs:             inputsToDeriv(p.Inputs),
+		ExtraInputs:        inputsToDeriv(p.ExtraInputs),
+		Flags:              p.Flags,
+		GroupInputs:        p.GroupInputs,
+		WholeArchiveInputs: p.WholeArchiveInputs,
+		InlineFilesStore:   p.InlineFilesStore,
+		AbsFilePath:        p.AbsFilePath,
+		AbsFileContent:     p.AbsFileContent,
+		StoreDeps:          p.StoreDeps,
+		WrapperEnv:         p.WrapperEnv,
 	}
 }
 
@@ -97,6 +98,8 @@ type LinkParams struct {
 	// GroupInputs wraps the input list in --start-group/--end-group.
 	// See Derivation.GroupInputs.
 	GroupInputs bool
+	// See Derivation.WholeArchiveInputs.
+	WholeArchiveInputs []string
 	// See Derivation.InlineFilesStore.
 	InlineFilesStore string
 	// See Derivation.AbsFilePath/AbsFileContent.
@@ -331,6 +334,8 @@ type LinkJSONParams struct {
 	ExtraInputs []JSONDrvInput
 	Flags       []string
 	GroupInputs bool // wrap inputs in --start-group/--end-group
+	// See Derivation.WholeArchiveInputs.
+	WholeArchiveInputs []string
 	// See Derivation.InlineFilesStore.
 	InlineFilesStore string
 	// See Derivation.AbsFilePath/AbsFileContent.
@@ -398,23 +403,24 @@ func ArchiveJSON(p ArchiveJSONParams) JSONDrv {
 // Derivation for env/script shape.
 func LinkJSON(p LinkJSONParams) JSONDrv {
 	d := &Derivation{
-		Kind:             KindLink,
-		Name:             p.Name,
-		System:           p.System,
-		Bash:             p.Bash,
-		Coreutils:        p.Coreutils,
-		Compiler:         p.Compiler,
-		Tool:             p.Tool,
-		OutName:          p.OutName,
-		Inputs:           inputsFromJSON(p.Inputs),
-		ExtraInputs:      inputsFromJSON(p.ExtraInputs),
-		Flags:            p.Flags,
-		GroupInputs:      p.GroupInputs,
-		InlineFilesStore: p.InlineFilesStore,
-		AbsFilePath:      p.AbsFilePath,
-		AbsFileContent:   p.AbsFileContent,
-		StoreDeps:        p.StoreDeps,
-		WrapperEnv:       p.Env,
+		Kind:               KindLink,
+		Name:               p.Name,
+		System:             p.System,
+		Bash:               p.Bash,
+		Coreutils:          p.Coreutils,
+		Compiler:           p.Compiler,
+		Tool:               p.Tool,
+		OutName:            p.OutName,
+		Inputs:             inputsFromJSON(p.Inputs),
+		ExtraInputs:        inputsFromJSON(p.ExtraInputs),
+		Flags:              p.Flags,
+		GroupInputs:        p.GroupInputs,
+		WholeArchiveInputs: p.WholeArchiveInputs,
+		InlineFilesStore:   p.InlineFilesStore,
+		AbsFilePath:        p.AbsFilePath,
+		AbsFileContent:     p.AbsFileContent,
+		StoreDeps:          p.StoreDeps,
+		WrapperEnv:         p.Env,
 	}
 	return d.toJSON(p.ExtraSrcs, nil)
 }

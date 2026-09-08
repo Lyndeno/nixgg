@@ -188,7 +188,10 @@ func TestBatchArchiveScriptRunsConcurrently(t *testing.T) {
 		t.Fatalf("expected %d start/end lines, got %d:\n%s", 2*n, len(lines), logBytes)
 	}
 
-	type event struct{ ts int64; kind string }
+	type event struct {
+		ts   int64
+		kind string
+	}
 	events := make([]event, 0, len(lines))
 	for _, l := range lines {
 		var ts int64

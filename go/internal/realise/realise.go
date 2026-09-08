@@ -249,15 +249,28 @@ func promoteManifest(l paths.Layout, cfg *toolchain.Config, id thunk.ID, storePa
 //
 // A copy is 30-100KB per TU, ~5MB across a redis build. Cheap next to
 // the wall-clock savings from correct incremental behavior.
+//
+// Subdir is guessed from target's own filename via expr.ArtifactSubdir
+// — correct for both of this function's own callers (Realise's own
+// automatic promotion, always driven by an actual Compile/Link/Archive
+// output whose name matches its own Kind's convention) but WRONG for a
+// link output that happens to be named like a compile one (Linux
+// Kbuild's own vmlinux.o) — see PromoteToStoreSubdir for that case.
 func PromoteToStore(l paths.Layout, cfg *toolchain.Config, thunkID thunk.ID, storePath, target string) error {
-	// Reach into the FHS subdir the emitted script wrote to: link
-	// outputs land in $out/bin, ar outputs in $out/lib, compile outputs
-	// flat. expr.ArtifactSubdir is the same function the emitters use, so
-	// this cannot drift from where the artifact actually is.
+	return PromoteToStoreSubdir(l, cfg, thunkID, storePath, target, expr.ArtifactSubdir(filepath.Base(target)))
+}
+
+// PromoteToStoreSubdir is PromoteToStore with an explicit subdir
+// (skipping the filename guess) — for a caller that already knows its
+// own artifact's real Kind and doesn't need to re-derive it from the
+// output's basename. See PromoteToStore's own docstring for why the
+// guess can be wrong, and shim.realiseAndLink for the caller that
+// needs this.
+func PromoteToStoreSubdir(l paths.Layout, cfg *toolchain.Config, thunkID thunk.ID, storePath, target, subdir string) error {
 	base := filepath.Base(target)
 	src := altStoreOnDisk(cfg.Store, storePath) + "/"
-	if sub := expr.ArtifactSubdir(base); sub != "" {
-		src += sub + "/"
+	if subdir != "" {
+		src += subdir + "/"
 	}
 	src += base
 	if _, err := os.Stat(src); err != nil {

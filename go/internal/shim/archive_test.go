@@ -48,15 +48,50 @@ func TestParseARArgs(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name: "no inputs", args: []string{"rcs", "libfoo.a"},
+			// A zero-member archive IS modeled, not bailed on — see
+			// parseARArgs' own docstring: Linux Kbuild issues exactly
+			// this for every disabled-subsystem directory, and letting
+			// it fall to Passthrough (the old behavior) cascades into
+			// every ancestor archive misclassifying it as foreign.
+			// Kbuild's own real invocation is `cDPrST` (r present).
+			name:     "no inputs is modeled as an empty archive",
+			args:     []string{"cDPrST", "libfoo.a"},
+			wantMods: "cDPrST", wantArch: "libfoo.a", wantInputs: nil, wantOK: true,
+		},
+		{
+			// q (quick-append) is the OTHER create-ish modifier that
+			// legitimately takes zero members — same gating as r.
+			name:     "no inputs with q is also modeled",
+			args:     []string{"q", "libfoo.a"},
+			wantMods: "q", wantArch: "libfoo.a", wantInputs: nil, wantOK: true,
+		},
+		{
+			// D alone (no r, no q) is a near-miss: a real modifier
+			// string, but not one of the two that construct content,
+			// so zero members here must still bail — there's no
+			// Kbuild recipe (or any real caller) that issues this.
+			name: "no inputs with D alone does not qualify", args: []string{"D", "libfoo.a"},
 			wantOK: false,
 		},
 		{
-			// A non-.o member (another archive, a .lo, a response file)
-			// means we can't model the member list; bail entirely rather
-			// than silently dropping it.
-			name: "non-.o input bails", args: []string{"rcs", "libfoo.a", "a.o", "sub.a"},
+			// A member extension outside {.o, .a} — a .lo (libtool
+			// object) or a response file — means we can't model the
+			// member list; bail entirely rather than silently
+			// dropping it. .a IS modeled (nested built-in.a-style
+			// archives, see TestParseARArgsNestedArchiveMember below),
+			// so this case must use something genuinely unmodeled.
+			name: "unmodeled extension bails", args: []string{"rcs", "libfoo.a", "a.o", "sub.lo"},
 			wantOK: false,
+		},
+		{
+			// A .a member is a nested archive (Kbuild's own
+			// built-in.a construction lists child directories' own
+			// built-in.a as members of the parent's) — modeled the
+			// same as a .o member, resolved later by classifyInputs
+			// via classify.Target the same way a link step's archive
+			// input already is.
+			name: "nested archive member", args: []string{"rcs", "libfoo.a", "a.o", "sub/built-in.a"},
+			wantMods: "rcs", wantArch: "libfoo.a", wantInputs: []string{"a.o", "sub/built-in.a"}, wantOK: true,
 		},
 		{
 			// T (thin archive) is a modelled modifier, same as any
@@ -99,41 +134,26 @@ func TestParseARArgs(t *testing.T) {
 // `a`, `b`, `i` and `N` all take a positional argument that follows the
 // modifier string: `ar rN <count> <archive> <member>...`. parseARArgs
 // treats args[1] as the archive unconditionally, so the count is taken as
-// the archive name.
-//
-// The docstring on parseARArgs claims `ar rN 3 archive.a obj` is
-// rejected. It is — but not for the stated reason. It bails because
-// "archive.a" lacks a .o suffix and hits the non-.o input check, i.e. by
-// accident of an unrelated filter. Change the member names so every
-// trailing token ends in .o and the misparse goes through:
-//
-//	ar rN 2 weird.o member.o
-//	  -> modifiers="rN" archive="2" inputs=["weird.o" "member.o"]
+// the archive name. Nothing catches this by accident anymore — once .a
+// members were accepted (for nested built-in.a support), the count-as-
+// archive misparse goes through directly, with no filter incidentally
+// saving it the way the old .o-only check did for a real archive.a name.
 //
 // The output derivation would be named after "2" and the real archive
 // would be treated as a member. This is reachable only from a caller
 // using ar's positional-count forms, which no fixture and no example
 // build does — hence documented and pinned, not fixed here.
 func TestParseARArgsPositionalCountIsMisparsed(t *testing.T) {
-	t.Run("the accidental rejection", func(t *testing.T) {
-		// Rejected, but because of the .o filter, not the grammar.
-		if _, _, _, ok := parseARArgs([]string{"rN", "3", "archive.a", "obj.o"}); ok {
-			t.Error("expected bail (via the non-.o check)")
-		}
-	})
-
-	t.Run("the misparse the filter does not catch", func(t *testing.T) {
-		m, a, in, ok := parseARArgs([]string{"rN", "2", "weird.o", "member.o"})
-		if !ok {
-			t.Skip("parseARArgs now rejects positional-count forms — " +
-				"the grammar was fixed; delete this test and assert the fix instead")
-		}
-		if a != "2" {
-			t.Errorf("archive = %q; this test exists to pin the known-wrong %q. "+
-				"If it changed, the positional grammar was addressed.", a, "2")
-		}
-		t.Logf("known defect: mods=%q archive=%q inputs=%q", m, a, in)
-	})
+	m, a, in, ok := parseARArgs([]string{"rN", "2", "weird.o", "member.o"})
+	if !ok {
+		t.Skip("parseARArgs now rejects positional-count forms — " +
+			"the grammar was fixed; delete this test and assert the fix instead")
+	}
+	if a != "2" {
+		t.Errorf("archive = %q; this test exists to pin the known-wrong %q. "+
+			"If it changed, the positional grammar was addressed.", a, "2")
+	}
+	t.Logf("known defect: mods=%q archive=%q inputs=%q", m, a, in)
 }
 
 // TestIsARModifiers pins the alphabet check. It is a set membership test

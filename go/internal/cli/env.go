@@ -97,7 +97,7 @@ what it already knows and errors out if anything's missing.
 	fmt.Fprintf(w, "export NIXGG_ROOT=%s\n", shellQuote(root))
 	// PATH order matters — first entries win:
 	//  1. bin/    — for the `nixgg` CLI itself
-	//  2. shims/  — for `cc`, `gcc`, `c++`, `g++`, `ar`, `ranlib`
+	//  2. shims/  — for `cc`, `gcc`, `c++`, `g++`, `ar`, `ranlib`, `ld`
 	//  3. toolchain bins from env-shell — real `ar`, `nm`, `strings`
 	//     etc that aren't shimmed. Also gnumake+coreutils, so a plain
 	//     `nixgg env` from an empty shell is enough to run `make`.
@@ -268,7 +268,7 @@ func parseExportFile(path string) (map[string]string, error) {
 }
 
 // shellQuote wraps a value in single quotes safe for shell eval.
-// Any embedded single quote is escaped as `'\''`.
+// Any embedded single quote is escaped as `'\”`.
 func shellQuote(s string) string {
 	if s == "" {
 		return "''"

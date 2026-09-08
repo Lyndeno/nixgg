@@ -20,13 +20,14 @@ func TestFromArgv0(t *testing.T) {
 		argv0 string
 		want  Tool
 	}{
-		// The six canonical names.
+		// The seven canonical names.
 		{"cc", ToolCC},
 		{"gcc", ToolGCC},
 		{"c++", ToolCXX},
 		{"g++", ToolGXX},
 		{"ar", ToolAR},
 		{"ranlib", ToolRanlib},
+		{"ld", ToolLD},
 
 		// Full paths — only the basename matters.
 		{"/usr/bin/gcc", ToolGCC},
@@ -59,8 +60,14 @@ func TestFromArgv0(t *testing.T) {
 		{"llvm-ar", ToolAR},
 		{"llvm-ranlib", ToolRanlib},
 
+		// Linux Kbuild's raw-link tool names — bfd/gold/lld linker
+		// personalities, and the ld.lld spelling LLVM builds use.
+		{"ld.bfd", ToolLD},
+		{"ld.gold", ToolLD},
+		{"ld.lld", ToolLD},
+		{"x86_64-linux-gnu-ld", ToolLD},
+
 		// Not compilers.
-		{"ld", ToolUnknown},
 		{"make", ToolUnknown},
 		{"python3", ToolUnknown},
 		{"nixgg", ToolUnknown},
@@ -76,25 +83,26 @@ func TestFromArgv0(t *testing.T) {
 	}
 }
 
-// TestBasenameIsClosedOverSixNames pins the property that makes widening
+// TestBasenameIsClosedOverSevenNames pins the property that makes widening
 // FromArgv0 safe for drv hashes: however a tool was spelled on the
 // command line, Basename() — which is what lands in the derivation as
-// toolBasename — returns one of six canonical strings.
+// toolBasename — returns one of seven canonical strings.
 //
 // So `gcc-15` dispatches as ToolGCC and the drv still says "gcc". That
 // is deliberate, not a lossy shortcut: the drv must name a tool that
 // exists inside the sandbox, which contains nixgg's pinned compiler and
 // not the caller's versioned one.
-func TestBasenameIsClosedOverSixNames(t *testing.T) {
+func TestBasenameIsClosedOverSevenNames(t *testing.T) {
 	canonical := map[string]bool{
 		"cc": true, "gcc": true, "c++": true,
-		"g++": true, "ar": true, "ranlib": true,
+		"g++": true, "ar": true, "ranlib": true, "ld": true,
 	}
 	spellings := []string{
 		"cc", "gcc", "c++", "g++", "ar", "ranlib",
 		"gcc-15", "clang", "clang++", "llvm-ar",
 		"x86_64-unknown-linux-gnu-gcc", "x86_64-linux-gnu-g++-14",
 		"/usr/bin/gcc", "arm-none-eabi-ranlib",
+		"ld", "ld.bfd", "ld.gold", "ld.lld", "x86_64-linux-gnu-ld",
 	}
 	for _, s := range spellings {
 		tool := FromArgv0(s)
@@ -104,7 +112,7 @@ func TestBasenameIsClosedOverSixNames(t *testing.T) {
 		}
 		b := tool.Basename()
 		if !canonical[b] {
-			t.Errorf("FromArgv0(%q).Basename() = %q, which is not one of the six "+
+			t.Errorf("FromArgv0(%q).Basename() = %q, which is not one of the seven "+
 				"canonical names — this WOULD change toolBasename in the drv and "+
 				"break drv-equivalence", s, b)
 		}

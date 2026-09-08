@@ -281,3 +281,100 @@ func TestClassifyInputsNonThinArchiveUnaffected(t *testing.T) {
 		t.Errorf("got %d extraJSON, want 0 for a non-thin archive: %+v", len(ci.ExtraJSON), ci.ExtraJSON)
 	}
 }
+
+// TestClassifyInputsPreservesRepeatedPrimaryInput is a regression test
+// for a real bug found against a real LLVM build: CMake's own
+// generated link line for llvm-min-tblgen lists `libLLVMSupport.a
+// libLLVMTableGen.a libLLVMSupport.a` — Support repeated AFTER
+// TableGen, which is CMake's OWN fix for plain `ld`'s left-to-right,
+// no-`--start-group` archive resolution (TableGen's objects need
+// symbols FROM Support, so Support must be scanned again after it).
+// classifyInputs used to deduplicate the PRIMARY input list the same
+// way it (correctly) dedupes the EXTRA (thin-archive-member) list,
+// silently dropping the second occurrence — the link then failed with
+// "undefined reference to llvm::FoldingSetBase::..." because ld never
+// got a second pass at Support's own symbols. Confirmed directly:
+// building the real llvm-min-tblgen fixture reproduced this exact
+// failure before the fix (appendLinkNoDedup/appendJSONNoDedup) landed.
+func TestClassifyInputsPreservesRepeatedPrimaryInput(t *testing.T) {
+	l := thinTestLayout(t)
+
+	supportDrv := "/nix/store/" + strings.Repeat("6", 32) + "-ar-libLLVMSupport.a.drv"
+	tablegenDrv := "/nix/store/" + strings.Repeat("7", 32) + "-ar-libLLVMTableGen.a.drv"
+
+	dir := t.TempDir()
+	supportPath := filepath.Join(dir, "libLLVMSupport.a")
+	tablegenPath := filepath.Join(dir, "libLLVMTableGen.a")
+	if err := os.WriteFile(supportPath, []byte(drvref.Body(supportDrv)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tablegenPath, []byte(drvref.Body(tablegenDrv)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same shape as CMake's own LINK_LIBRARIES: Support, TableGen,
+	// Support again.
+	ci, err, ok := classifyInputs(&toolchain.Config{}, []string{supportPath, tablegenPath, supportPath}, "", l, "link", func() error {
+		t.Fatal("should not passthrough")
+		return nil
+	})
+	if err != nil || !ok {
+		t.Fatalf("classifyInputs failed: ok=%v err=%v", ok, err)
+	}
+	if len(ci.JSON) != 3 {
+		t.Fatalf("got %d primary jsonInputs, want 3 (Support, TableGen, Support again — "+
+			"the caller's own repeat must survive): %+v", len(ci.JSON), ci.JSON)
+	}
+	if ci.JSON[0].Ref != supportDrv || ci.JSON[1].Ref != tablegenDrv || ci.JSON[2].Ref != supportDrv {
+		t.Errorf("primary jsonInputs order/content = %+v, want [Support, TableGen, Support]", ci.JSON)
+	}
+}
+
+// TestClassifyInputsNestedArchiveMember pins the shape Kbuild's own
+// recursive built-in.a construction needs: `ar rcs parent/built-in.a
+// a.o b.o child/built-in.a` — a PARENT archive whose member list
+// includes a CHILD directory's own built-in.a, not just object files.
+//
+// classifyInputs already dispatches purely on classify.Target's Kind,
+// never on file extension (see classifyInputs' own switch), so a .a
+// member classified as Drv (sandbox mode: a sibling archive's own
+// drvref stub) is handled identically to a .o member classified as
+// Drv — becomes one ordinary primary JSON input, referencing the
+// child archive's own drv. archive.go's parseARArgs is what used to
+// reject this shape outright (every input had to end in .o); this
+// test exercises classifyInputs the same way archive.go's own Archive
+// function does once parseARArgs accepts the .a member.
+func TestClassifyInputsNestedArchiveMember(t *testing.T) {
+	l := thinTestLayout(t)
+
+	childArchiveDrv := "/nix/store/" + strings.Repeat("6", 32) + "-ar-built-in.a.drv"
+	dir := t.TempDir()
+	objPath := filepath.Join(dir, "a.o")
+	if err := os.WriteFile(objPath, []byte("not a real object, just a placeholder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	childArchivePath := filepath.Join(dir, "child-built-in.a")
+	if err := os.WriteFile(childArchivePath, []byte(drvref.Body(childArchiveDrv)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// a.o resolves as Regular here (it's a plain on-disk file, not one
+	// of nixgg's own artifacts) — classifyInputs would passthrough on
+	// it. This test only needs to prove the .a member's OWN
+	// classification path works, so pass just the archive member,
+	// mirroring how the other thin-archive tests in this file isolate
+	// a single input.
+	ci, err, ok := classifyInputs(&toolchain.Config{}, []string{childArchivePath}, "", l, "ar", func() error {
+		t.Fatal("should not passthrough — the nested archive resolves to one of our own drvref stubs")
+		return nil
+	})
+	if err != nil || !ok {
+		t.Fatalf("classifyInputs failed: ok=%v err=%v", ok, err)
+	}
+	if len(ci.JSON) != 1 {
+		t.Fatalf("got %d primary jsonInputs, want 1 (the nested archive, as an ordinary drv input): %+v", len(ci.JSON), ci.JSON)
+	}
+	if ci.JSON[0].Kind != "drv" || ci.JSON[0].Ref != childArchiveDrv {
+		t.Errorf("primary input = %+v, want Kind=drv Ref=%q", ci.JSON[0], childArchiveDrv)
+	}
+}
